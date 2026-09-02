@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nanonets"
+version = "0.1.0"
+description = "Single-Electron Transport Simulator"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT License" }
+authors = [
+  { name = "Jonas", email = "jonasmensing@posteo.de" },
+]
+dependencies = [
+    # "numpy>=1.26.0", 
+]
+
+[project.optional-dependencies]
+# HIER stehen Dinge, die man nur zum Entwickeln braucht (Testen, Formatieren)
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.5.0",
+    "mypy>=1.10.0"
+]
+
+[tool.ruff]
+# Ruff formatiert unseren Code und findet Fehler
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+# Welche Regeln Ruff prüfen soll (E/F = Standardfehler, I = Importe sortieren)
+select = ["E", "F", "I"]
+
+[tool.pytest.ini_options]
+# Sagt Pytest, wo es nach Tests suchen soll
+testpaths = ["tests"]
