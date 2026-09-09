@@ -30,35 +30,22 @@ class NanoparticleTopology:
         Matrix describing the network connectivity:
             - First column: electrode connection (if any), or NO_CONNECTION.
             - Remaining columns: indices of connected nanoparticles, or NO_CONNECTION.
+    radius_vals : np.ndarray of float
+            Radii of nanoparticles [nm].
 
     Constants
     ---------
     NO_CONNECTION : int
         Placeholder value for unconnected junctions in topology matrix.
-
-    Methods
-    -------
-    lattice_network(N_x, N_y)
-        Set up a lattice of nanoparticles.
-    add_electrodes_to_lattice_net(particle_pos)
-        Attach electrodes to specific nanoparticles by their lattice positions.
-    random_network(N_particles, N_junctions=0)
-        Set up a random network, using Delaunay triangulation.
-    add_electrodes_to_random_net(electrode_positions)
-        Attach electrodes to closest available nanoparticles in a random network.
-    add_np_to_output()
-        Add a nanoparticle at the output electrode.
-    graph_to_net_topology()
-        Synchronize net_topology from the NetworkX graph object.
-    get_net_topology(), get_graph(), get_positions()
-        Accessors for topology, graph, and node positions.
-    validate_network()
-        Run consistency and connectivity checks.
-    export_network(filepath), import_network(filepath)
-        Save/load network state for reproducibility and sharing.
+    MIN_NP_RADIUS : float
+        Minimum allowed nanoparticle radius
+    MIN_NP_NP_DISTANCE : float
+        Minimum distance between two adjacent nanoparticles
     """
 
     NO_CONNECTION = -100
+    MIN_NP_RADIUS = 5.0
+    MIN_NP_NP_DISTANCE = 1.0
 
     def __init__(self, seed: Optional[int] = None) -> None:
         """
@@ -69,15 +56,186 @@ class NanoparticleTopology:
         seed : int, optional
             Seed for the random number generator (for reproducibility).
         """
-        self.rng            = np.random.default_rng(seed)
-        self.N_particles    = 0
-        self.N_electrodes   = 0
-        self.N_junctions    = 0
-        self.G              = nx.DiGraph()
-        self.pos            = {}
-        self.net_topology   = np.array([])
+        self.rng: np.random.Generator = np.random.default_rng(seed)
+        self.N_particles: int = 0
+        self.N_electrodes: int = 0
+        self.N_junctions: int = 0
+        self.N_x: Optional[int] = None
+        self.N_y: Optional[int] = None
+        self.lattice: bool = True
+        self.G: nx.DiGraph = nx.DiGraph()
+        self.pos: Dict[int, Tuple[float,float]] = {}
+        self.net_topology: np.ndarray = np.array([])
+        self.radius_vals: np.ndarray = None
+        self.dist_matrix: Optional[np.ndarray] = None
+        self.electrode_dist_matrix: Optional[np.ndarray] = None
 
-    def lattice_network(self, N_x: int, N_y: int) -> None:
+    ### NANOPARTICLE RADIUS
+    #######################
+
+    def _sample_radii(self, size: int, mean: float, std: float) -> np.ndarray:
+        """Sample radii from truncated normal distribution >= MEAN_NP_RADIUS
+
+        Parameters
+        ----------
+        size : int
+            Number of samples
+        mean : float
+            Mean radius [nm]
+        std : float
+            Standard Deviation for radii [nm]
+
+        Returns
+        -------
+        np.ndarray
+            Array of radii
+        """
+
+        if std == 0.0:
+            return np.full(size, mean)
+        
+        radii = self.rng.normal(loc=mean, scale=std, size=size)
+        while np.any(radii < self.MIN_NP_RADIUS):
+            bad_mask = radii < self.MIN_NP_RADIUS
+            radii[bad_mask] = self.rng.normal(loc=mean, scale=std, size=np.sum(bad_mask))
+        return radii
+
+    def init_nanoparticle_radius(self, mean_radius: float = 10.0, std_radius: float = 0.0) -> None:
+        """
+        Initialize radii for all nanoparticles, ensuring all radii are >= MIN_NP_RADIUS.
+
+        Parameters
+        ----------
+        mean_radius : float, optional
+            Mean nanoparticle radius [nm]. Must be >= MIN_NP_RADIUS. (Default: 10.0)
+        std_radius : float, optional
+            Standard deviation for radii [nm]. Must be >= 0. (Default: 0.0)
+
+        Raises
+        ------
+        ValueError
+            If mean_radius <= MIN_NP_RADIUS or std_radius < 0.
+            If no nanoparticles are present in the network.
+        """
+        if mean_radius < self.MIN_NP_RADIUS:
+            raise ValueError(
+                f"Mean radius ({mean_radius}) cannot be smaller than MIN_NP_RADIUS ({self.MIN_NP_RADIUS})."
+            )
+        if std_radius < 0:
+            raise ValueError(f"Standard deviation must be non-negative, got {std_radius}.")
+        if self.N_particles <= 0:
+            raise ValueError("No nanoparticles defined. Initialize the network before setting radii.")
+
+        self.radius_vals = self._sample_radii(self.N_particles, mean_radius, std_radius)
+
+    def update_nanoparticle_radius(self, nanoparticles: List[int], mean_radius: float = 10.0, std_radius: float = 0.0) -> None:
+        """
+        Update the radii of specific nanoparticles in the network.
+
+        Parameters
+        ----------
+        nanoparticles : List[int]
+            Indices of nanoparticles to update.
+        mean_radius : float, optional
+            Mean radius for the new values [nm]. Must be >= MIN_NP_RADIUS. (default: 10.0).
+        std_radius : float, optional
+            Standard deviation of radius [nm]. Must be >= 0. (default: 0.0).
+
+        Raises
+        ------
+        ValueError
+            If mean_radius <= MIN_NP_RADIUS, std_radius < 0, or if indices are non existent.
+        RuntimeError
+            If radius_vals has not been initialized.
+        """
+        if self.radius_vals is None:
+            raise RuntimeError("Nanoparticle radii not initialized. Call init_nanoparticle_radius first.")
+        if self.network_type == "lattice":
+            raise RuntimeError("Cannot alter individual radii in a perfect lattice network.")
+
+        if mean_radius < self.MIN_NP_RADIUS:
+            raise ValueError(
+                f"Mean radius ({mean_radius}) cannot be smaller than MIN_NP_RADIUS ({self.MIN_NP_RADIUS})."
+            )
+        if std_radius < 0:
+            raise ValueError(f"Standard deviation must be non-negative, got {std_radius}.")
+            
+        invalid_indices = [i for i in nanoparticles if i < 0 or i >= self.N_particles]
+        if invalid_indices:
+            raise ValueError(f"Invalid nanoparticle indices: {invalid_indices}")
+
+        new_radii = self._sample_radii(len(nanoparticles), mean_radius, std_radius)
+        self.radius_vals[nanoparticles] = new_radii
+
+        if self.network_type == "random":
+            self._rebuild_random_geometry()
+
+    def update_nanoparticle_radius_at_random(self, N: int, mean_radius: float = 10.0, std_radius: float = 0.0) -> None:
+        """
+        Randomly select N unique nanoparticles and update their radii.
+
+        Parameters
+        ----------
+        N : int
+            Number of distinct nanoparticles to modify.
+        mean_radius : float, optional
+            Mean radius value [nm]. Must be >= MIN_NP_RADIUS. (default: 10.0).
+        std_radius : float, optional
+            Standard deviation for radius values [nm]. Must be >= 0. (default: 0.0).
+
+        Raises
+        ------
+        ValueError
+            If mean_radius <= MIN_NP_RADIUS, std_radius < 0, or N is greater than the total number of nanoparticles.
+        RuntimeError
+            If radius_vals has not been initialized.
+        """
+        if self.radius_vals is None:
+            raise RuntimeError("Nanoparticle radii not initialized. Call init_nanoparticle_radius first.")
+        if self.network_type == "lattice":
+            raise RuntimeError("Cannot alter individual radii in a perfect lattice network.")
+
+        if N > self.N_particles or N <= 0:
+            raise ValueError(f"Requested {N} nanoparticles, but total available is {self.N_particles}.")
+
+        if mean_radius < self.MIN_NP_RADIUS:
+            raise ValueError(
+                f"Mean radius ({mean_radius}) cannot be smaller than MIN_NP_RADIUS ({self.MIN_NP_RADIUS})."
+            )
+        if std_radius < 0:
+            raise ValueError(f"Standard deviation must be non-negative, got {std_radius}.")
+
+        chosen_indices = self.rng.choice(a=self.N_particles, size=N, replace=False)
+        new_radii = self._sample_radii(N, mean_radius, std_radius)
+        self.radius_vals[chosen_indices] = new_radii
+
+        if self.network_type == "random":
+            self._rebuild_random_geometry()
+
+    def _update_distance_matrix(self) -> None:
+        """Compute the NxN pairwise Euclidean distance matrix between nanoparticles."""
+        coords = np.array([self.pos[i] for i in range(self.N_particles)])
+        # Broadcasting: (N, 1, 2) - (1, N, 2) -> (N, N, 2)
+        delta = coords[:, np.newaxis, :] - coords[np.newaxis, :, :]
+        self.dist_matrix = np.linalg.norm(delta, axis=-1)
+    
+    def _update_electrode_distance_matrix(self) -> None:
+        """Compute the (N_electrodes x N_particles) Euclidean distance matrix."""
+        if self.N_electrodes == 0:
+            self.electrode_dist_matrix = np.array([])
+            return
+            
+        el_coords = np.array([self.pos[-i] for i in range(1, self.N_electrodes + 1)])
+        np_coords = np.array([self.pos[i] for i in range(self.N_particles)])
+        
+        # Broadcasting: (N_el, 1, 2) - (1, N_np, 2) -> (N_el, N_np, 2)
+        delta = el_coords[:, np.newaxis, :] - np_coords[np.newaxis, :, :]
+        self.electrode_dist_matrix = np.linalg.norm(delta, axis=-1)
+
+    ### LATTICE NETWORKS
+    ####################
+
+    def lattice_network(self, N_x: int, N_y: int, mean_radius: float = 10.0) -> None:
         """
         Define a 2D square lattice of nanoparticles.
 
@@ -87,49 +245,66 @@ class NanoparticleTopology:
             Number of nanoparticles along the x-direction.
         N_y : int
             Number of nanoparticles along the y-direction.
+        mean_radius : float, optional
+            Radius of the nanoparticles [nm] (default: 10.0). 
+            Note: Lattice networks only support identical radii (std_radius = 0).
 
-        Notes
+        Raise
         -----
-        Each node is connected to its immediate neighbors.
+        RuntimeError
+            If radius_vals has not been initialized.
         """
-        self.lattice        = True
-        self.N_x, self.N_y  = N_x, N_y
-        self.N_particles    = N_x * N_y
+        self.lattice = True
+        self.N_x, self.N_y = N_x, N_y
+        self.N_particles = N_x * N_y
+
+        # Define nanoparticle radii
+        self.init_nanoparticle_radius(mean_radius=mean_radius, std_radius=0.0)
+        r_val = self.radius_vals[0]
+        spacing = 2 * r_val + self.MIN_NP_NP_DISTANCE
 
         # Generate 2D grid positions
-        nano_particles_pos = [[x, y] for y in range(N_y) for x in range(N_x)]
-        self.pos = {i : [pos[0],pos[1]] for i, pos in enumerate(nano_particles_pos)}
+        self.pos = {
+            y * N_x + x: (float(x * spacing), float(y * spacing))
+            for y in range(N_y) for x in range(N_x)
+        }
         
-        # Initialize graph and add nodes
         self.G = nx.DiGraph()
         self.G.add_nodes_from(range(self.N_particles))
 
-        # Determine number of neighbors (junctions) based on dimensions
-        if ((N_x > 1) and (N_y > 1)):
-            self.N_junctions = 4+1
+        if N_x > 1 and N_y > 1:
+            self.N_junctions = 4
         else:
-            self.N_junctions = 2+1
+            self.N_junctions = 2
 
         # Allocate topology matrix: first col for electrode, rest for neighbors
+        # Note: N_junctions + 1 columns total (col 0 = electrode, rest = neighbors)
         self.net_topology = np.full((self.N_particles, self.N_junctions + 1), fill_value=self.NO_CONNECTION)
 
         # Connect each nanoparticle to its 2D nearest neighbors
-        for idx, pos1 in enumerate(nano_particles_pos):
-            n_NN = 0  # Neighbor count
-            for jdx, pos2 in enumerate(nano_particles_pos):
-                # Distance of 1: Immediate neighbor
-                distance = np.sqrt((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2)
-                if distance == 1:
-                    self.net_topology[idx, n_NN + 1] = jdx
-                    self.G.add_edge(idx,jdx)
-                    self.G.add_edge(jdx,idx)
-                    n_NN += 1
-                if (n_NN == self.N_junctions):
-                    break
-         
+        for y in range(N_y):
+            for x in range(N_x):
+                idx = y * N_x + x
+                neighbors = []
+                
+                # Check 4 possible directions (Right, Left, Up, Down)
+                potential_neighbors = [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]
+                for nx_coord, ny_coord in potential_neighbors:
+                    if 0 <= nx_coord < N_x and 0 <= ny_coord < N_y:
+                        jdx = ny_coord * N_x + nx_coord
+                        neighbors.append(jdx)
+                        self.G.add_edge(idx, jdx)
+                        self.G.add_edge(jdx, idx) # Undirected behavior in directed graph
+
+                # Store in topology matrix
+                for n_idx, neighbor_jdx in enumerate(neighbors):
+                    self.net_topology[idx, n_idx + 1] = neighbor_jdx
+
+        self._update_distance_matrix()
+   
     def add_electrodes_to_lattice_net(self, particle_pos: List[List[int]]) -> None:
         """
-        Attach electrodes to nanoparticles at specified positions (for cubic grids).
+        Attach electrodes to nanoparticles at specified positions (for lattice networks).
 
         Parameters
         ----------
@@ -139,230 +314,418 @@ class NanoparticleTopology:
         Raises
         ------
         RuntimeError
-            If called before a cubic network is initialized.
+            If called before a lattice network is initialized.
         ValueError
             If any position is out of bounds or assigned multiple times.
         """
-        if not getattr(self, "lattice", False) or not hasattr(self, "N_x") or not hasattr(self, "N_y"):
-            raise RuntimeError("cubic_network() must be called before add_electrodes_to_lattice_net().")
+        if not self.lattice or self.N_x is None or self.N_y is None:
+            raise RuntimeError("lattice_network() must be called before add_electrodes_to_lattice_net().")
         
         # Check for duplicate or out-of-bounds positions
         seen_indices = set()
         for pos in particle_pos:
-            if not (isinstance(pos, (list, tuple)) and len(pos) == 2):
-                raise ValueError(f"Invalid position format: {pos}. Must be [x, y].")
-            x, y = pos
+            x, y = pos[0], pos[1]
             if not (0 <= x < self.N_x and 0 <= y < self.N_y):
-                raise ValueError(f"Electrode position {pos} out of bounds (grid size {self.N_x}x{self.N_y}).")
+                raise ValueError(f"Electrode position {pos} out of bounds.")
             idx = y * self.N_x + x
             if idx in seen_indices:
                 raise ValueError(f"Duplicate electrode assignment at position {pos}.")
             seen_indices.add(idx)
     
+        # Numer of electrodes and add electrode nodes to the graph, using negative indices for electrodes
         self.N_electrodes = len(particle_pos)
-
-        # Add the electrode nodes to the graph, using negative indices for electrodes
-        electrode_nodes = -np.arange(1,self.N_electrodes+1)
+        electrode_nodes = -np.arange(1, self.N_electrodes + 1)
         self.G.add_nodes_from(electrode_nodes)
+        spacing = 2 * self.radius_vals[0] + self.MIN_NP_NP_DISTANCE
 
         # Attach each electrode to its corresponding particle based on particle positions
         for n, pos in enumerate(particle_pos):
+            x, y = pos
             # Convert 2D position (x, y) into a 1D index in the nanoparticle network
-            p = pos[1]*self.N_x + pos[0]
+            p = y * self.N_x + x
             self.net_topology[p,0] = 1 + n  # Store the electrode number (starting from 1)
             
             # Connect the electrode node to the nanoparticle
-            electrode_node  = electrode_nodes[n]
-            self.G.add_edge(electrode_node,p)
-            self.G.add_edge(p,electrode_node)
+            electrode_node = electrode_nodes[n]
+            self.G.add_edge(electrode_node, p)
+            self.G.add_edge(p, electrode_node)
 
             # Set electrode positions, adjusting based on boundary conditions
-            if (pos[0] == 0):           # If the particle is at the left boundary (x == 0)
-                self.pos[electrode_node] = (pos[0]-1,pos[1])
-            elif (pos[0] == (self.N_x-1)):   # If the particle is at the right boundary (x == N_x-1)
-                self.pos[electrode_node] = (pos[0]+1,pos[1])
-            elif (pos[1] == 0):         # If the particle is at the bottom boundary (y == 0)
-                self.pos[electrode_node] = (pos[0],pos[1]-1)
+            if x == 0:           # If the particle is at the left boundary (x == 0)
+                self.pos[electrode_node] = ((x - 1) * spacing, y * spacing)
+            elif x == (self.N_x - 1):   # If the particle is at the right boundary (x == N_x-1)
+                self.pos[electrode_node] = ((x + 1) * spacing, y * spacing)
+            elif y == 0:         # If the particle is at the bottom boundary (y == 0)
+                self.pos[electrode_node] = (x * spacing, (y - 1) * spacing)
             else:                       # Default case (otherwise move the electrode in the positive direction)
-                self.pos[electrode_node] = (pos[0],pos[1]+1)
+                self.pos[electrode_node] = (x * spacing, (y + 1) * spacing)
 
-    def random_network(self, N_particles: int) -> None:
-        """Just predefines attributes for future processing in electrostatic.py
+        self._update_electrode_distance_matrix()
 
-        Parameters
-        ----------
-        N_particles : int
-            _description_
+    ### RANDOM NETWORKS
+    ###################
+
+    def pack_circles(self, iterations: int = 20000, dt: float = 0.005, k_repel: float = 25.0, k_attract: float = 0.5,
+                     initial_temp:float = 2.0, start_cutoff: float = 40.0, end_cutoff: float = 2.2, safety_passes: int = 5000):
         """
-        self.lattice        = False
-        self.N_particles    = N_particles
+        Packs polydisperse circles into a dense, cohesive cluster using a physics-based 
+        simulated annealing ("glass transition") algorithm.
 
-    def add_electrodes_to_random_net(self, electrode_positions: List[List[float]]) -> None:
-        """Just predefines attributes for future processing in electrostatic.py
+        The algorithm transitions from a high-temperature "liquid" phase (global gathering, 
+        high thermal noise) to a low-temperature "glassy" phase (local lattice locking, 
+        zero noise) to find an optimal local minimum.
 
         Parameters
         ----------
-        electrode_positions : List[List[float]]
-            List of electrode positions [[x1, y1], [x2, y2], ...]. Coordinates should be within the box [-1, 1].
+        iterations : int, optional
+            The total number of physics simulation steps. High values (e.g. 20000) 
+            are recommended for high-precision packing. Default is 20000.
+        dt : float, optional
+            The time step for the physics integration. Lower values (e.g. 0.005) 
+            increase stability and precision but slow down effective movement. 
+            Default is 0.005.
+        k_repel : float, optional
+            Stiffness of the particles. Controls how strongly overlapping particles 
+            push apart. Higher values resolve overlaps faster but can cause instability 
+            if `dt` is too large. Default is 25.0.
+        k_attract : float, optional
+            Cohesion strength. Controls how strongly particles pull together to fill 
+            voids. Default is 0.5.
+        initial_temp : float, optional
+            The starting magnitude of the thermal noise (Brownian motion). This noise 
+            randomly shakes particles to prevent them from getting trapped in loose 
+            arches or jams. Decays to zero over the course of the simulation. 
+            Default is 2.0.
+        start_cutoff : float, optional
+            The initial interaction range (as a multiple of target distance). 
+            A large value (e.g. 40.0) ensures that initially distant particles 
+            can "see" and attract each other to form a single cluster. 
+            Default is 40.0.
+        end_cutoff : float, optional
+            The final interaction range. A small value (e.g. 2.2) ensures that 
+            particles eventually only bond with their immediate neighbors, forming 
+            a dense local lattice without global crushing. Default is 2.2.
+        safety_passes : int, optional
+            The number of purely geometric (non-physics) iterations run after the 
+            simulation to strictly resolve any remaining floating-point overlaps. 
+            Default is 5000.
+
+        Returns
+        -------
+        dict
+            A dictionary where keys are the indices (0 to N-1) corresponding to the 
+            input `radii`, and values are lists `[x, y]` of center coordinates.
+
+        Notes
+        -----
+        The simulation minimizes a potential energy landscape where the ideal distance 
+        between two particles $i$ and $j$ is $r_i + r_j + d_{min}$. 
+        """
+
+        # Copy NP Radii and Number
+        radii = self.radius_vals.copy()
+        N = self.N_particles
+        
+        # --- 1. Smart Initialization ---
+        # Shuffle indices to prevent input-order bias (size segregation)
+        indices = np.arange(N)
+        self.rng.shuffle(indices)
+        
+        # Estimate total area to determine a safe initial spread
+        # We start loose to allow the "liquid" phase to reorganize easily
+        total_area = np.sum(np.pi * (radii + self.MIN_NP_NP_DISTANCE)**2)
+        start_radius = np.sqrt(total_area) * 2.5
+        
+        # Random placement in a circular cloud
+        theta = self.rng.uniform(0, 2*np.pi, N)
+        r_pos = np.sqrt(self.rng.uniform(0, 1, N)) * start_radius
+        x = r_pos * np.cos(theta)
+        y = r_pos * np.sin(theta)
+        
+        # Store as (N, 2) array for vectorized operations
+        positions = np.column_stack((x, y))
+
+        # --- 2. Main Physics Annealing Loop ---       
+        for step in range(iterations):
+            progress = step / iterations
+            
+            # --- A. Annealing Schedule ---
+            
+            # 1. Interaction Range (Vision): Global -> Local
+            # Keep global (start_cutoff) for first 30% to gather isolated clusters
+            if progress < 0.3:
+                current_cutoff = start_cutoff
+            else:
+                # Exponential decay to end_cutoff
+                # This gently tightens the "vision" to nearest neighbors only
+                p_decay = (progress - 0.3) / 0.7
+                current_cutoff = start_cutoff * (end_cutoff / start_cutoff)**p_decay
+
+            # 2. Temperature (Thermal Noise): Hot -> Frozen
+            # Linearly decay noise to zero at 85% completion to allow final settling
+            if progress < 0.85:
+                current_temp = initial_temp * (1.0 - progress / 0.85)
+            else:
+                current_temp = 0.0
+
+            # --- B. Vectorized Distance Calculations ---
+            # Calculate N x N distance matrix using broadcasting
+            # delta[i, j] is the vector pointing from j to i
+            delta = positions[:, np.newaxis, :] - positions[np.newaxis, :, :] 
+            dist_sq = np.sum(delta**2, axis=2)
+            dist = np.sqrt(dist_sq)
+            
+            # Prevent division by zero for self-interaction or exact overlap
+            safe_dist = dist.copy()
+            safe_dist[safe_dist < 1e-7] = 1e-7
+            norm_delta = delta / safe_dist[..., np.newaxis]
+            
+            # Determine Target Distances
+            radii_sum = radii[:, np.newaxis] + radii[np.newaxis, :]
+            target_dist = radii_sum + self.MIN_NP_NP_DISTANCE
+            
+            # Diff: Negative = Overlap, Positive = Gap
+            diff = dist - target_dist
+            np.fill_diagonal(diff, np.inf) # Ignore self-interaction
+            
+            # --- C. Force Calculation ---
+            
+            # 1. Repulsion (Overlap)
+            # Active if diff < 0. Force is proportional to overlap depth.
+            mask_repel = diff < 0
+            repel_mag = diff * k_repel
+            # Force clamping avoids numeric explosion from deep initial overlaps
+            repel_mag = np.clip(repel_mag, -5.0, 5.0) 
+            
+            f_repel = np.sum(mask_repel[..., np.newaxis] * norm_delta * repel_mag[..., np.newaxis], axis=1)
+            
+            # 2. Attraction (Cohesion)
+            # Active if gap exists (diff > 0) AND within current interaction range.
+            vision_limit = target_dist * current_cutoff
+            mask_attract = (diff > 0) & (dist < vision_limit)
+            
+            attract_mag = diff * k_attract
+            attract_mag = np.clip(attract_mag, -5.0, 5.0)
+            
+            f_attract = np.sum(mask_attract[..., np.newaxis] * norm_delta * attract_mag[..., np.newaxis], axis=1)
+            
+            # Combine Forces
+            # Note: repel_mag is negative (diff<0). norm_delta points j->i.
+            # We want to push i away from j.
+            # The math: Total Force = - (Repel + Attract)
+            total_force = -(f_repel + f_attract)
+            
+            # 3. Thermal Noise (Brownian Motion)
+            # Random kicks to break "jammed" arches and explore configurations
+            if current_temp > 0:
+                noise = self.rng.normal(0, 1, size=(N, 2)) * current_temp
+                total_force += noise
+                
+            # 4. Global Damping (Viscosity)
+            # Simulates a thick fluid, preventing perpetual oscillation
+            total_force *= 0.5 
+            
+            # 5. Drift Correction
+            # Gently recenter the cloud to (0,0) so it doesn't float away
+            positions -= np.mean(positions, axis=0) * 0.05
+            
+            # Integration (Euler)
+            positions += total_force * dt
+            
+        # --- 3. Final Safety Polish ---
+        # Strictly resolves any remaining microscopic overlaps           
+        for i in range(safety_passes):
+            delta = positions[:, np.newaxis, :] - positions[np.newaxis, :, :]
+            dist = np.sqrt(np.sum(delta**2, axis=2))
+            dist[dist < 1e-7] = 1e-7
+            
+            req = radii[:, np.newaxis] + radii[np.newaxis, :] + self.MIN_NP_NP_DISTANCE
+            overlap = req - dist
+            np.fill_diagonal(overlap, -1)
+            
+            if not np.any(overlap > 0):
+                break
+                
+            mask = overlap > 0
+            norm_delta = delta / dist[..., np.newaxis]
+            # Very gentle correction to fix overlaps without breaking the lattice
+            correction = np.sum(mask[..., np.newaxis] * norm_delta * overlap[..., np.newaxis], axis=1) * 0.2
+            positions += correction
+            positions -= np.mean(positions, axis=0)
+
+        # Format output
+        self.pos = {i: positions[i].tolist() for i in range(N)}
+
+    def create_packing_graph(self, delta: float = 0.5, max_attempts: int = 5) -> None:
+        """
+        Create a symmetric directed graph based on physical circle contact.
+
+        Two particles i, j connect if distance <= (r_i + r_j + MIN_NP_NP_DISTANCE + delta).
+
+        Parameters
+        ----------
+        delta : float, optional
+            Connection tolerance buffer [nm] (default: 0.5).
+        max_attempts : int, optional
+            Number of repacking attempts if graph is disconnected (default: 5).
+        """
+        if self.radius_vals is None or len(self.pos) < self.N_particles:
+            raise RuntimeError("Packing positions and radii must exist before creating the graph.")
+
+        attempt = 0
+        while attempt < max_attempts:
+            self.G = nx.DiGraph()
+            self.G.add_nodes_from(range(self.N_particles))
+
+            coords = np.array([self.pos[i] for i in range(self.N_particles)])
+
+            for i in range(self.N_particles):
+                pos_i = coords[i]
+                r_i = self.radius_vals[i]
+
+                for j in range(i + 1, self.N_particles):
+                    dist = np.linalg.norm(pos_i - coords[j])
+                    threshold = r_i + self.radius_vals[j] + self.MIN_NP_NP_DISTANCE + delta
+
+                    if dist <= threshold:
+                        self.G.add_edge(i, j)
+                        self.G.add_edge(j, i)
+
+            # Check strong connectivity across all particles
+            if nx.is_strongly_connected(self.G):
+                break
+
+            # Repack if disconnected
+            self.pack_circles()
+            attempt += 1
+
+        # Max NP-NP neighbor count
+        max_deg = max((deg for _, deg in self.G.out_degree()), default=0)
+        self.N_junctions = max_deg
+    
+    def _rebuild_random_geometry(self, delta: float = 0.5) -> None:
+        """
+        Internal pipeline to heal the network after radius changes.
+        Repacks circles, rebuilds the graph, and updates matrices.
+        """
+        self.pack_circles()
+        self.create_packing_graph(delta=delta)
+        self._graph_to_net_topology()
+        self._update_distance_matrix()
+        # Falls Elektroden existieren, müssen auch deren Distanzen neu berechnet werden
+        if self.N_electrodes > 0:
+            self._update_electrode_distance_matrix()
+
+    def random_network(self, N_particles: int, mean_radius: float = 10.0, std_radius: float = 0.0, delta: float = 0.5) -> None:
+        """Initializes a random network from scratch."""
+        if N_particles <= 1:
+            raise ValueError("N_particles must be greater than 1.")
+
+        self.lattice = False
+        self.network_type = "random"
+        self.N_particles = N_particles
+
+        # 1. Radien initialisieren
+        self.init_nanoparticle_radius(mean_radius=mean_radius, std_radius=std_radius)
+
+        # 2. Geometrie aufbauen (nutzt unsere neue Pipeline)
+        self._rebuild_random_geometry(delta=delta)
+
+    def add_electrodes_to_random_net(self, electrode_positions: List[Tuple[float, float]], electrode_radius: float = 10.0) -> None:
+        """
+        Attach electrodes to the closest available nanoparticles in a random network.
+
+        The input positions are normalized [-1, 1] and will be scaled to the physical
+        bounding box of the packed nanoparticle cluster.
+
+        Parameters
+        ----------
+        electrode_positions : List of (x, y)
+            Normalized coordinates. E.g., (-1, 0) is middle-left, (1, 0) is middle-right.
+        electrode_radius : float, optional
+            Physical radius of the electrodes to place them just outside the NP cloud.
+        """
+        if getattr(self, "network_type", None) != "random":
+            raise RuntimeError("add_electrodes_to_random_net() requires a random network.")
+        if len(electrode_positions) > self.N_particles:
+            raise ValueError("Cannot attach more electrodes than nanoparticles.")
+
+        # 1. Physikalische Ausdehnung der Partikelwolke bestimmen
+        coords = np.array([self.pos[i] for i in range(self.N_particles)])
+        min_x, max_x = np.min(coords[:, 0]), np.max(coords[:, 0])
+        min_y, max_y = np.min(coords[:, 1]), np.max(coords[:, 1])
+        
+        center_x = (max_x + min_x) / 2.0
+        center_y = (max_y + min_y) / 2.0
+        
+        # Halbe Breite/Höhe plus Puffer für die Elektrode
+        half_width = (max_x - min_x) / 2.0 + electrode_radius
+        half_height = (max_y - min_y) / 2.0 + electrode_radius
+
+        self.N_electrodes = len(electrode_positions)
+        electrode_nodes = -np.arange(1, self.N_electrodes + 1)
+        self.G.add_nodes_from(electrode_nodes)
+
+        # 2. Für jede Elektrode die physische Position berechnen und ankoppeln
+        for n, norm_pos in enumerate(electrode_positions):
+            norm_x, norm_y = float(norm_pos[0]), float(norm_pos[1])
+            if not (-1.0 <= norm_x <= 1.0 and -1.0 <= norm_y <= 1.0):
+                raise ValueError(f"Electrode coords must be within [-1, 1], got {norm_pos}")
+
+            # Skalierung auf echte Nanometer
+            phys_x = center_x + norm_x * half_width
+            phys_y = center_y + norm_y * half_height
+            
+            el_node = electrode_nodes[n]
+            self.pos[el_node] = (phys_x, phys_y)
+
+            # Finde das nächstgelegene Nanopartikel (euklidischer Abstand)
+            dist_to_particles = np.linalg.norm(coords - np.array([phys_x, phys_y]), axis=1)
+            closest_np = int(np.argmin(dist_to_particles))
+
+            # Im Graphen verknüpfen
+            self.G.add_edge(el_node, closest_np)
+            self.G.add_edge(closest_np, el_node)
+
+        # 3. Topologie und Distanzmatrix für die Elektroden updaten
+        self._graph_to_net_topology()
+        self._update_electrode_distance_matrix()
+
+    def _graph_to_net_topology(self)->None:
+        """
+        Build the net_topology matrix from the current directed graph (self.G).
 
         Raises
         ------
         RuntimeError
-            If called before a random network has been created.
-        ValueError
-            If there are more electrodes than nanoparticles, or invalid position types.
+            If self.G or basic network attributes are not initialized.
         """
-        if getattr(self, "lattice", True):
-            raise RuntimeError("add_electrodes_to_random_net() can only be called after random_network().")
-        if len(electrode_positions) > self.N_particles:
-            raise ValueError("Cannot attach more electrodes than there are nanoparticles.")
+        if self.N_particles <= 0 or self.N_junctions <= 0:
+            raise RuntimeError("Network attributes (N_particles, N_junctions) not initialized.")
+
+        # Allocate matrix
+        net_topology = np.full(
+            shape=(self.N_particles, self.N_junctions + 1),
+            fill_value=self.NO_CONNECTION,
+            dtype=int,
+        )
+
         
-        self.electrode_positions = electrode_positions
-        self.N_electrodes = len(electrode_positions)
-            
-    # def random_network(self, N_particles: int) -> None:
-    #     """
-    #     Set up a random 2D planar nanoparticle network using Delaunay triangulation
-    #     and Poisson disk sampling for physical plausibility.
+        # For each nanoparticle (node indices 0 ... N_particles-1)
+        for node in range(self.N_particles):
+            neighbor_idx = 1
+            for neighbor in self.G.neighbors(node):
+                if neighbor >= 0:
+                    # Nanoparticle neighbor
+                    if neighbor_idx <= self.N_junctions:
+                        net_topology[node, neighbor_idx] = int(neighbor)
+                        neighbor_idx += 1
+                else:
+                    # Electrode node (negative index -> 1-based positive electrode number)
+                    net_topology[node, 0] = int(-neighbor)
 
-    #     The domain size is automatically chosen so that all N_particles fit with the required
-    #     minimum separation (based on smallest allowed radius).
-
-    #     Parameters
-    #     ----------
-    #     N_particles : int
-    #         Number of nanoparticles (nodes) in the network.
-
-    #     Raises
-    #     ------
-    #     ValueError
-    #         If N_particles < 3 (Delaunay triangulation requires at least 3 points).
-    #     RuntimeError
-    #         If Poisson disk sampling cannot generate the requested points.
-    #     """
-    #     if N_particles < 3:
-    #         raise ValueError("At least 3 particles are required for Delaunay triangulation.")
-
-    #     self.lattice        = False
-    #     self.N_particles    = N_particles
-
-    #     # Use the minimum possible NP radius for separation BEFORE radii are initialized
-    #     min_dist = 2 * 10.0 + 1.0  # [nm]
-
-    #     # Compute required domain radius for random close packing
-    #     packing_density     = 0.45  # empirical value for random disk packings
-    #     needed_area         = N_particles * (min_dist / 2) ** 2 / packing_density
-    #     domain_radius       = np.sqrt(needed_area)
-    #     self.domain_radius  = domain_radius
-
-    #     def poisson_disk_sampling(n_points, min_dist, domain_radius=1.0, max_attempts=10000, rng=None):
-    #         rng = rng or np.random.default_rng()
-    #         points = []
-    #         attempts = 0
-    #         while len(points) < n_points and attempts < max_attempts:
-    #             r = domain_radius * np.sqrt(rng.uniform())
-    #             theta = rng.uniform(0, 2 * np.pi)
-    #             x, y = r * np.cos(theta), r * np.sin(theta)
-    #             if all(np.hypot(x - px, y - py) >= min_dist for px, py in points):
-    #                 points.append((x, y))
-    #             attempts += 1
-    #         if len(points) < n_points:
-    #             raise RuntimeError(
-    #                 f"Could not place {n_points} points with min_dist={min_dist} "
-    #                 f"in {max_attempts} attempts. Try reducing n_points or min_dist."
-    #             )
-    #         return points
-
-    #     # Generate random positions with conservative minimum separation
-    #     pos = poisson_disk_sampling(self.N_particles, min_dist, domain_radius=domain_radius, rng=self.rng)
-
-    #     # Build undirected graph via Delaunay triangulation
-    #     temp_G = nx.Graph()
-    #     for i, p in enumerate(pos):
-    #         temp_G.add_node(i, pos=p)
-
-    #     tri = Delaunay(pos)
-    #     edges = set()
-    #     for simplex in tri.simplices:
-    #         for i in range(3):
-    #             edge = tuple(sorted([simplex[i], simplex[(i + 1) % 3]]))
-    #             edges.add(edge)
-    #     temp_G.add_edges_from(edges)
-
-    #     # Store as a directed graph (all edges are bidirectional)
-    #     self.G = nx.DiGraph(temp_G)
-    #     self.pos = {i: p for i, p in enumerate(pos)}
-    #     self.N_junctions = np.max([val for (node, val) in temp_G.degree()]) + 1
-
-    #     self._graph_to_net_topology()
-        
-    # def add_electrodes_to_random_net(self, electrode_positions: List[List[float]]) -> None:
-    #     """
-    #     Attach electrodes to a random nanoparticle network.
-
-    #     This method is intended to be used **only after** calling `random_network()`.
-    #     For each provided electrode position, the nearest unassigned nanoparticle is located,
-    #     and a bidirectional connection is made. Each electrode is represented as a new negative-index node,
-    #     and its spatial position is recorded.
-
-    #     Parameters
-    #     ----------
-    #     electrode_positions : List[List[float]]
-    #         List of electrode positions [[x1, y1], [x2, y2], ...]. Coordinates should be within the box [-1, 1].
-
-    #     Raises
-    #     ------
-    #     RuntimeError
-    #         If called before a random network has been created (i.e., if not self.lattice and pos is not set).
-    #     ValueError
-    #         If there are more electrodes than nanoparticles, or invalid position types.
-    #     """
-    #     if getattr(self, "lattice", True):
-    #         raise RuntimeError("add_electrodes_to_random_net() can only be called after random_network().")
-    #     if not hasattr(self, "pos") or not self.pos or not isinstance(self.pos, dict):
-    #         raise RuntimeError("No nanoparticle positions found. Call random_network() first.")
-    #     if len(electrode_positions) > self.N_particles:
-    #         raise ValueError("Cannot attach more electrodes than there are nanoparticles.")
-    #     if not hasattr(self, "domain_radius"):
-    #         raise RuntimeError("Domain radius not found. Make sure random_network has been called.")
-        
-    #     # Scale electrode positions from [-1, 1] to device disk
-    #     scaled_electrode_positions = [[x * self.domain_radius, y * self.domain_radius] for x, y in electrode_positions]
-        
-    #     self.N_electrodes = len(scaled_electrode_positions)
-    #     used_nodes = set()  # Track which nanoparticles are already connected to an electrode
-
-    #     # Convert positions to DataFrame for easy computation
-    #     node_positions = pd.DataFrame(self.pos).T.sort_index()
-
-    #     for n, e_pos in enumerate(scaled_electrode_positions):
-    #         if not (isinstance(e_pos, (list, tuple)) and len(e_pos) == 2):
-    #             raise ValueError(f"Electrode position {e_pos} is invalid. Must be [x, y].")
-            
-    #         # Compute Euclidean distance to each nanoparticle
-    #         node_positions['d'] = np.sqrt((e_pos[0] - node_positions[0]) ** 2 +
-    #                                     (e_pos[1] - node_positions[1]) ** 2)
-            
-    #         # Find closest unused nanoparticle
-    #         found = False
-    #         for i in node_positions.sort_values(by='d').index:
-    #             if i not in used_nodes:
-    #                 used_nodes.add(i)
-    #                 closest_nanoparticle = i
-    #                 found = True
-    #                 break
-    #         if not found:
-    #             raise RuntimeError("Ran out of unassigned nanoparticles before placing all electrodes.")
-            
-    #         electrode_node = -n - 1
-    #         # Create bidirectional edges
-    #         self.G.add_edge(electrode_node, closest_nanoparticle)
-    #         self.G.add_edge(closest_nanoparticle, electrode_node)
-    #         # Store the electrode's spatial position for plotting
-    #         self.pos[electrode_node] = tuple(e_pos)
-        
-    #     self._graph_to_net_topology()
-                
+        self.net_topology = net_topology
+                            
     def add_np_to_output(self):
         """
         Insert a single new nanoparticle in series between the currently connected
@@ -443,54 +806,6 @@ class NanoparticleTopology:
             # For random networks, shift electrode right or up for clarity
             self.pos[electrode_node] = (x + 0.2, y + 0.2)
 
-    def _graph_to_net_topology(self)->None:
-        """
-        Rebuild the net_topology matrix from the current directed graph (self.G).
-
-        For each nanoparticle node (nodes 0 to N_particles-1):
-            - The first column indicates a connected electrode (index > 0),
-            or NO_CONNECTION if none is present. Only the *first* electrode found
-            will be listed (multiple electrode connections are not expected).
-            - Subsequent columns list the indices of connected nanoparticle neighbors,
-            or NO_CONNECTION as a placeholder if not all neighbor slots are filled.
-
-        This method should be called after building or modifying the graph,
-        especially after creating a new random network or adding electrodes.
-
-        Updates
-        -------
-        self.net_topology : np.ndarray
-
-        Raises
-        ------
-        RuntimeError
-            If self.G or basic network attributes are not initialized.
-        """
-        if not hasattr(self, "G") or not isinstance(self.G, nx.DiGraph):
-            raise RuntimeError("Graph object self.G is not initialized.")
-        if not hasattr(self, "N_particles") or not hasattr(self, "N_junctions"):
-            raise RuntimeError("Basic network attributes (N_particles, N_junctions) not set.")
-    
-        # Create an empty net_topology array
-        net_topology = np.full(shape=(self.N_particles, self.N_junctions + 1), fill_value=self.NO_CONNECTION, dtype=int)
-
-        # For each nanoparticle (node indices 0 ... N_particles-1)
-        for node in range(self.N_particles):
-            neighbor_idx = 1  # Start filling from column 1 (0 is for electrode)
-            for neighbor in self.G.neighbors(node):
-                if neighbor >= 0:
-                    # Connected to another nanoparticle
-                    if neighbor_idx <= self.N_junctions:
-                        net_topology[node, neighbor_idx] = neighbor
-                        neighbor_idx += 1
-                else:
-                    # Connected to an electrode (negative indices)
-                    # Only one electrode per particle is stored in the topology
-                    net_topology[node, 0] = -neighbor  # Store as positive integer (1-based)
-
-        # Store the generated net topology in the class attribute
-        self.net_topology = net_topology
-
     def get_net_topology(self) -> np.ndarray:
         """
         Return a copy of the network topology matrix.
@@ -522,6 +837,60 @@ class NanoparticleTopology:
             Dictionary of node positions.
         """
         return dict(self.pos)
+
+    def get_dist_matrix(self) -> np.ndarray:
+        """Get the network distance matrix
+
+        Returns
+        -------
+        np.ndarray
+            Array containing network distances [nm]
+            Shape: (N_particles, N_particles)
+        
+        Raises
+        ------
+        RuntimeError
+            If distance matrix hasn't been calculated
+        """
+        if not hasattr(self, 'dist_matrix'):
+            raise RuntimeError("Distance matrix not calculated. Call pack_planar_circles first.")
+        return self.dist_matrix
+    
+    def get_electrode_dist_matrix(self) -> np.ndarray:
+        """Get the electrode distance matrix
+
+        Returns
+        -------
+        np.ndarray
+            Array containing network distances [nm]
+            Shape: (N_electrodes, N_particles)
+        
+        Raises
+        ------
+        RuntimeError
+            If electrode distance matrix hasn't been calculated
+        """
+        if not hasattr(self, 'electrode_dist_matrix'):
+            raise RuntimeError("Electrode distance matrix not calculated. Call pack_planar_circles first.")
+        return self.electrode_dist_matrix
+    
+    def get_radius(self) -> np.ndarray:
+        """Get the radius of each NP
+
+        Returns
+        -------
+        np.ndarray
+            Array containing nanoparticle radius [nm]
+            Shape: (N_particles,)
+        
+        Raises
+        ------
+        RuntimeError
+            If radius hasn't been calculated
+        """
+        if not hasattr(self, "radius_vals"):
+            raise RuntimeError("Nanoparticle radius not defined. Call init_nanoparticle_radius first.")
+        return self.radius_vals
 
     def validate_network(self) -> bool:
         """
@@ -655,31 +1024,42 @@ if __name__ == '__main__':
 
     # Lattice
     #########
-    # N_x, N_y        = 5,3
-    # electrode_pos   = [[0,0],[2,0],[0,2],[2,2]]
-    N_x, N_y        = 1,1
-    electrode_pos   = [[0,0],[0,0]]
-    lattice_net     = NanoparticleTopology()
+    N_x, N_y = 5,3
+    electrode_pos = [[0,0],[2,0],[4,0],[4,2]]
+    radius = 10.0
+    lattice_net = NanoparticleTopology()
 
     # Build Network and attach Electrodes
-    lattice_net.lattice_network(N_x, N_y)
+    lattice_net.lattice_network(N_x, N_y, radius)
     lattice_net.add_electrodes_to_lattice_net(electrode_pos)
-    # lattice_net.add_np_to_output()
-    is_valid = lattice_net.validate_network()
+
+    lattice_pos = lattice_net.get_positions()
+    lattice_dist = lattice_net.get_dist_matrix()
+    lattice_e_dist = lattice_net.get_electrode_dist_matrix()
+    lattice_radius = lattice_net.get_radius()
+
     print(lattice_net)
-    print("This Network is valid!\n") if is_valid else print("This network is not valid!\n")
+    print(lattice_pos)
+    print(lattice_e_dist)
+    print(lattice_radius)
+
+    # lattice_net.add_electrodes_to_lattice_net(electrode_pos)
+    # lattice_net.add_np_to_output()
+    # is_valid = lattice_net.validate_network()
+    
+    # print("This Network is valid!\n") if is_valid else print("This network is not valid!\n")
     
     # Disordered Network Topology
     #############################
-    N_particles     = 20
-    electrode_pos   = [[-1,-1],[-1,1],[1,-1],[1,1]]
-    rng_net         = NanoparticleTopology()
+    # N_particles     = 20
+    # electrode_pos   = [[-1,-1],[-1,1],[1,-1],[1,1]]
+    # rng_net         = NanoparticleTopology()
 
-    # Build Network and attach Electrodes
-    rng_net.random_network(N_particles)
-    rng_net.add_electrodes_to_random_net(electrode_pos)
-    rng_net.add_np_to_output()
-    is_valid = rng_net.validate_network()
-    print(lattice_net)
-    print("This Network is valid!") if is_valid else print("This network is not valid!")
+    # # Build Network and attach Electrodes
+    # rng_net.random_network(N_particles)
+    # rng_net.add_electrodes_to_random_net(electrode_pos)
+    # rng_net.add_np_to_output()
+    # is_valid = rng_net.validate_network()
+    # print(lattice_net)
+    # print("This Network is valid!") if is_valid else print("This network is not valid!")
 
