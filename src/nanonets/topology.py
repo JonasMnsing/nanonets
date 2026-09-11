@@ -5,10 +5,7 @@ from typing import List, Optional, Dict, Tuple
 class NanoparticleTopology:
     """
     Class to set up, modify, and analyze the topology of nanoparticle networks,
-    including connections to external electrodes.
-
-    Supports both lattice (grid) and random topologies. Manages network structure via a
-    NetworkX directed graph and a compact topology matrix for export/import.
+    including connections to external electrodes. Supports both lattice (grid) and random topologies.
 
     Attributes
     ----------
@@ -31,7 +28,11 @@ class NanoparticleTopology:
             - First column: electrode connection (if any), or NO_CONNECTION.
             - Remaining columns: indices of connected nanoparticles, or NO_CONNECTION.
     radius_vals : np.ndarray of float
-            Radii of nanoparticles [nm].
+        Radii of nanoparticles [nm].
+    dist_matrix : np.ndarray
+        Pairwise NP-NP distance matrix [nm].
+    electrode_dist_matrix : np.ndarray
+        Pairwise NP-electrode distance matrix [nm].
 
     Constants
     ---------
@@ -41,6 +42,10 @@ class NanoparticleTopology:
         Minimum allowed nanoparticle radius
     MIN_NP_NP_DISTANCE : float
         Minimum distance between two adjacent nanoparticles
+    
+    Notes
+    -----
+    All distances/radii are in nanometers (nm)
     """
 
     NO_CONNECTION = -100
@@ -757,6 +762,72 @@ class NanoparticleTopology:
                     net_topology[node, 0] = int(-neighbor)
 
         self.net_topology = net_topology
+
+    def delete_n_junctions(self, n: int) -> None:
+        """
+        Randomly delete n nanoparticle-nanoparticle junctions (edges), preserving:
+        - network connectivity (no bridges/cut-edges are removed)
+        - all electrode connectivity (edges connected to electrode-bound NPs are preserved)
+
+        Parameters
+        ----------
+        n : int
+            Number of nanoparticle-nanoparticle junctions to delete.
+
+        Raises
+        ------
+        ValueError
+            If n is negative or more than the number of deletable (non-bridge) edges.
+        """
+        if n < 0:
+            raise ValueError(f"Number of junctions to delete must be non-negative, got {n}")
+
+        if n == 0:
+            return
+
+        # Extract subgraph of only nanoparticles (no electrodes)
+        G_np = self.G.subgraph([i for i in range(self.N_particles)]).to_undirected()
+
+        # Build list of all possible removable edges
+        # Bedingung: Keiner der beiden Knoten darf eine direkte Elektrode in Spalte 0 haben!
+        removable = []
+        for i in range(self.N_particles):
+            if self.net_topology[i, 0] == self.NO_CONNECTION:
+                for j in self.net_topology[i, 1:]:
+                    if j != self.NO_CONNECTION:
+                        j_int = int(j)
+                        # Nur hinzufügen, wenn auch j keine Elektrode besitzt und wir die Kante nur 1x betrachten (i < j_int)
+                        if i < j_int and self.net_topology[j_int, 0] == self.NO_CONNECTION:
+                            removable.append((i, j_int))
+
+        # Find bridges (edges whose removal would disconnect the network)
+        bridges = set(nx.bridges(G_np))
+
+        # Only allow deletion of non-bridge edges
+        candidates = [edge for edge in removable if edge not in bridges and edge[::-1] not in bridges]
+        
+        if n > len(candidates):
+            raise ValueError(f"Only {len(candidates)} removable (non-bridge) junctions available, cannot delete {n}.")
+
+        # Randomly pick n edges to delete using the class's internal numpy random generator
+        idxs = self.rng.choice(len(candidates), size=n, replace=False)
+        to_delete = [candidates[i] for i in idxs]
+
+        for i, j in to_delete:
+            # Remove from topology matrix (both directions)
+            i_idx = np.where(self.net_topology[i, 1:] == j)[0]
+            j_idx = np.where(self.net_topology[j, 1:] == i)[0]
+            
+            if len(i_idx) > 0:
+                self.net_topology[i, 1 + i_idx[0]] = self.NO_CONNECTION
+            if len(j_idx) > 0:
+                self.net_topology[j, 1 + j_idx[0]] = self.NO_CONNECTION
+                
+            # Remove from NetworkX graph (both directions for DiGraph)
+            if self.G.has_edge(i, j):
+                self.G.remove_edge(i, j)
+            if self.G.has_edge(j, i):
+                self.G.remove_edge(j, i)
                             
     # def add_np_to_output(self):
     #     """
