@@ -2,7 +2,7 @@ import numpy as np
 from nanonets.topology import NanoparticleTopology
 from typing import List, Optional
 
-class NanoparticleElectrostatic():
+class NanoparticleElectrostatic:
     """
     Extends NanoparticleTopology with electrostatic modeling and physical parameters
     for 2D nanoparticle networks.
@@ -15,53 +15,36 @@ class NanoparticleElectrostatic():
 
     Attributes
     ----------
-    Inherited from NanoparticleTopology:
-        N_particles : int
-            Number of nanoparticles.
-        N_electrodes : int
-            Number of electrodes.
-        N_junctions : int
-            Number of junctions per nanoparticle (target/average).
-        G : nx.DiGraph
-            NetworkX directed graph object.
-        pos : dict
-            Mapping of node indices to 2D positions.
-        net_topology : np.ndarray
-            Matrix encoding connections and electrode links.
-
-    Added by this class:
-        electrode_type : np.ndarray of str
-            Type for each electrode ('constant' or 'floating').
-        floating_indices : np.ndarray of int
-            Indices of floating electrodes.
-        radius_vals : np.ndarray of float
-            Radii of nanoparticles [nm].
-        capacitance_matrix : np.ndarray
-            Full network capacitance matrix [aF].
-        inv_capacitance_matrix : np.ndarray
-            Inverse capacitance matrix [1/aF].
-        charge_vector : np.ndarray
-            Vector of induced NP charges [aC].
-        self_capacitance : np.ndarray
-            Self-capacitance per NP [aF].
-        electrode_capacitance_matrix : np.ndarray
-            Capacitance matrix between electrodes and NPs [aF].
-        
+    electrode_type : np.ndarray of str
+        Type for each electrode ('constant' or 'floating').
+    floating_indices : np.ndarray of int
+        Indices of floating electrodes.
+    capacitance_matrix : np.ndarray
+        Full network capacitance matrix [aF].
+    inv_capacitance_matrix : np.ndarray
+        Inverse capacitance matrix [1/aF].
+    charge_vector : np.ndarray
+        Vector of induced NP charges [aC].
+    potential_vector : np.ndarray
+        Network potential for all nodes [V]
+    self_capacitance : np.ndarray
+        Self-capacitance per NP [aF].
+    electrode_capacitance_matrix : np.ndarray
+        Capacitance matrix between electrodes and NPs [aF].
 
     Physical Constants
     ------------------
-        EPSILON_0 : float
-            Vacuum permittivity [aF/nm]
-        PI : float
-            Pi
-        ELECTRODE_RADIUS : float
-            Electrode radius [nm]
+    EPSILON_0 : float
+        Vacuum permittivity [aF/nm]
+    PI : float
+        Pi
+    ELECTRODE_RADIUS : float
+        Electrode radius [nm]
 
     Notes
     -----
     All capacitances are in attofarads (aF) and charges are in (aC).
     """
-    # Physical constants
     EPSILON_0           = 8.85418781762039e-3  # aF/nm, vacuum permittivity
     PI                  = 3.14159265359
     ELECTRODE_RADIUS    = 10.0  # nm
@@ -72,6 +55,8 @@ class NanoparticleElectrostatic():
 
         Parameters
         ----------
+        topology : NanoparticleTopology
+            A fully initialized topology model of the network.
         electrode_type : List[str], optional
             List of electrode types, each element should be 'constant' or 'floating'.
             Length must match number of electrodes to be attached to the network.
@@ -107,6 +92,17 @@ class NanoparticleElectrostatic():
             
             self.electrode_type = arr
             self.floating_indices = np.where(arr == 'floating')[0]
+
+        self.eps_r = None
+        self.eps_s = None
+
+        self.capacitance_matrix = None
+        self.inv_capacitance_matrix = None
+        self.electrode_capacitance_matrix = None
+
+        self.self_capacitance = None
+        self.charge_vector = None
+        self.potential_vector = None
 
     def mutual_capacitance_adjacent_spheres(self, eps_r: float, np_radius1: float, np_radius2: float, distance: float, N_sum: int = 50) -> float:
         """
@@ -288,6 +284,11 @@ class NanoparticleElectrostatic():
         - Stores result as self.electrode_capacitance_matrix (shape: N_electrodes x N_particles)
         - Stores self-capacitances as self.self_capacitance (length: N_particles)
 
+        Parameters
+        ----------
+        short_range : bool, optional
+            If true, there are only mutual capacitance values between neighbors
+
         Raises
         ------
         RuntimeError
@@ -427,6 +428,39 @@ class NanoparticleElectrostatic():
         # C_lead.T @ V_e is shape (N_particles,)
         self.charge_vector = self.electrode_capacitance_matrix.T.dot(V_e) + self.self_capacitance * V_g
 
+    def init_potential_vector(self, voltage_values: np.ndarray) -> None:
+        """
+        Initialize the full potential vector for the network, setting electrode and gate voltages.
+
+        The potential vector is organized for fast KMC/tunneling indexing:
+        - First N_electrodes entries: electrode voltages (from voltage_values)
+        - Remaining N_particles entries: initialized to zero (updated dynamically during simulation)
+
+        Parameters
+        ----------
+        voltage_values : np.ndarray or list
+            Array of shape (N_electrodes + 1,) = [V_e1, V_e2, ..., V_eN, V_G]
+            where V_G is the gate voltage.
+
+        Raises
+        ------
+        ValueError
+            If voltage_values length does not match number of electrodes + 1.
+        """
+        n_elec = self.topo.N_electrodes
+        n_parts = self.topo.N_particles
+        
+        if n_parts == 0:
+            raise RuntimeError("Network not initialized. Build topology first.")
+
+        voltage_values = np.asarray(voltage_values)
+        if voltage_values.shape[0] != n_elec + 1:
+            raise ValueError(f"Expected {n_elec + 1} voltage values, got {voltage_values.shape[0]}.")
+        
+        self.potential_vector = np.zeros(n_elec + n_parts)
+        if n_elec > 0:
+            self.potential_vector[0:n_elec] = voltage_values[:-1]
+
     def get_charge_vector_offset(self, voltage_values : np.ndarray) -> np.ndarray:
         """
         Compute the charge vector offset induced by the provided electrode and gate voltages.
@@ -478,6 +512,22 @@ class NanoparticleElectrostatic():
         if getattr(self, 'charge_vector', None) is None:
             raise RuntimeError("Charge vector not initialized. Call init_charge_vector first.")
         return self.charge_vector.copy()
+
+    def get_potential_vector(self) -> np.ndarray:
+        """
+        Returns
+        -------
+        potential_vector : ndarray
+            Potential values for electrodes and nanoparticles [V]
+            
+        Raises
+        ------
+        RuntimeError
+            If potential vector has not been initialized.
+        """
+        if getattr(self, 'potential_vector', None) is None:
+            raise RuntimeError("Potential vector not initialized. Call init_potential_vector first.")
+        return self.potential_vector.copy()
     
     def get_capacitance_matrix(self) -> np.ndarray:
         """
