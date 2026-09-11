@@ -1,12 +1,8 @@
 import numpy as np
-import networkx as nx
 from nanonets.topology import NanoparticleTopology
 from typing import List, Optional
-from shapely.geometry import Point, LineString
-from shapely.ops import unary_union, nearest_points
-from itertools import combinations
 
-class NanoparticleElectrostatic(topology.NanoparticleTopology):
+class NanoparticleElectrostatic():
     """
     Extends NanoparticleTopology with electrostatic modeling and physical parameters
     for 2D nanoparticle networks.
