@@ -128,7 +128,7 @@ class NanoparticleTopology:
 
         self.radius_vals = self._sample_radii(self.N_particles, mean_radius, std_radius)
 
-    def update_nanoparticle_radius(self, nanoparticles: List[int], mean_radius: float = 10.0, std_radius: float = 0.0) -> None:
+    def update_nanoparticle_radius(self, nanoparticles: List[int], mean_radius: float = 10.0, std_radius: float = 0.0, delta: float = 0.5, max_attempts: int = 5, **packing_kwargs) -> None:
         """
         Update the radii of specific nanoparticles in the network.
 
@@ -140,7 +140,11 @@ class NanoparticleTopology:
             Mean radius for the new values [nm]. Must be >= MIN_NP_RADIUS. (default: 10.0).
         std_radius : float, optional
             Standard deviation of radius [nm]. Must be >= 0. (default: 0.0).
-
+        delta : float, optional
+            Connection tolerance buffer [nm] (default: 0.5).
+        max_attempts : int, optional
+            Number of repacking attempts if graph is disconnected (default: 5).
+            
         Raises
         ------
         ValueError
@@ -168,9 +172,9 @@ class NanoparticleTopology:
         self.radius_vals[nanoparticles] = new_radii
 
         if self.network_type == "random":
-            self._rebuild_random_geometry()
+            self._rebuild_random_geometry(delta = delta, max_attempts = max_attempts, **packing_kwargs)
 
-    def update_nanoparticle_radius_at_random(self, N: int, mean_radius: float = 10.0, std_radius: float = 0.0) -> None:
+    def update_nanoparticle_radius_at_random(self, N: int, mean_radius: float = 10.0, std_radius: float = 0.0, delta: float = 0.5, max_attempts: int = 5, **packing_kwargs) -> None:
         """
         Randomly select N unique nanoparticles and update their radii.
 
@@ -182,6 +186,10 @@ class NanoparticleTopology:
             Mean radius value [nm]. Must be >= MIN_NP_RADIUS. (default: 10.0).
         std_radius : float, optional
             Standard deviation for radius values [nm]. Must be >= 0. (default: 0.0).
+        delta : float, optional
+            Connection tolerance buffer [nm] (default: 0.5).
+        max_attempts : int, optional
+            Number of repacking attempts if graph is disconnected (default: 5).
 
         Raises
         ------
@@ -210,17 +218,21 @@ class NanoparticleTopology:
         self.radius_vals[chosen_indices] = new_radii
 
         if self.network_type == "random":
-            self._rebuild_random_geometry()
+            self._rebuild_random_geometry(delta = delta, max_attempts = max_attempts, **packing_kwargs)
 
     def _update_distance_matrix(self) -> None:
-        """Compute the NxN pairwise Euclidean distance matrix between nanoparticles."""
+        """
+        Compute the NxN pairwise Euclidean distance matrix between nanoparticles.
+        """
         coords = np.array([self.pos[i] for i in range(self.N_particles)])
         # Broadcasting: (N, 1, 2) - (1, N, 2) -> (N, N, 2)
         delta = coords[:, np.newaxis, :] - coords[np.newaxis, :, :]
         self.dist_matrix = np.linalg.norm(delta, axis=-1)
     
     def _update_electrode_distance_matrix(self) -> None:
-        """Compute the (N_electrodes x N_particles) Euclidean distance matrix."""
+        """
+        Compute the (N_electrodes x N_particles) Euclidean distance matrix.
+        """
         if self.N_electrodes == 0:
             self.electrode_dist_matrix = np.array([])
             return
@@ -249,8 +261,8 @@ class NanoparticleTopology:
             Radius of the nanoparticles [nm] (default: 10.0). 
             Note: Lattice networks only support identical radii (std_radius = 0).
 
-        Raise
-        -----
+        Raises
+        ------
         RuntimeError
             If radius_vals has not been initialized.
         """
@@ -556,7 +568,7 @@ class NanoparticleTopology:
         # Format output
         self.pos = {i: positions[i].tolist() for i in range(N)}
 
-    def create_packing_graph(self, delta: float = 0.5, max_attempts: int = 5) -> None:
+    def create_packing_graph(self, delta: float = 0.5, max_attempts: int = 5, **packing_kwargs) -> None:
         """
         Create a symmetric directed graph based on physical circle contact.
 
@@ -596,28 +608,48 @@ class NanoparticleTopology:
                 break
 
             # Repack if disconnected
-            self.pack_circles()
+            self.pack_circles(**packing_kwargs)
             attempt += 1
 
         # Max NP-NP neighbor count
         max_deg = max((deg for _, deg in self.G.out_degree()), default=0)
         self.N_junctions = max_deg
     
-    def _rebuild_random_geometry(self, delta: float = 0.5) -> None:
+    def _rebuild_random_geometry(self, delta: float = 0.5, max_attempts: int = 5, **packing_kwargs) -> None:
         """
         Internal pipeline to heal the network after radius changes.
         Repacks circles, rebuilds the graph, and updates matrices.
+
+        Parameters
+        ----------
+        delta : float, optional
+            Connection tolerance buffer [nm] (default: 0.5).
+        max_attempts : int, optional
+            Number of repacking attempts if graph is disconnected (default: 5).
         """
-        self.pack_circles()
-        self.create_packing_graph(delta=delta)
+        self.pack_circles(**packing_kwargs)
+        self.create_packing_graph(delta=delta, max_attempts=max_attempts, **packing_kwargs)
         self._graph_to_net_topology()
         self._update_distance_matrix()
         # Falls Elektroden existieren, müssen auch deren Distanzen neu berechnet werden
         if self.N_electrodes > 0:
             self._update_electrode_distance_matrix()
 
-    def random_network(self, N_particles: int, mean_radius: float = 10.0, std_radius: float = 0.0, delta: float = 0.5) -> None:
-        """Initializes a random network from scratch."""
+    def random_network(self, N_particles: int, mean_radius: float = 10.0, std_radius: float = 0.0, delta: float = 0.5, max_attempts: int = 5, **packing_kwargs) -> None:
+        """
+        Initializes a random network from scratch.
+
+        Parameters
+        ----------
+        mean_radius : float, optional
+            Mean nanoparticle radius [nm]. Must be >= MIN_NP_RADIUS. (Default: 10.0)
+        std_radius : float, optional
+            Standard deviation for radii [nm]. Must be >= 0. (Default: 0.0)
+        delta : float, optional
+            Connection tolerance buffer [nm] (default: 0.5).
+        max_attempts : int, optional
+            Number of repacking attempts if graph is disconnected (default: 5).
+        """
         if N_particles <= 1:
             raise ValueError("N_particles must be greater than 1.")
 
@@ -629,7 +661,7 @@ class NanoparticleTopology:
         self.init_nanoparticle_radius(mean_radius=mean_radius, std_radius=std_radius)
 
         # 2. Geometrie aufbauen (nutzt unsere neue Pipeline)
-        self._rebuild_random_geometry(delta=delta)
+        self._rebuild_random_geometry(delta=delta, max_attempts=max_attempts, **packing_kwargs)
 
     def add_electrodes_to_random_net(self, electrode_positions: List[Tuple[float, float]], electrode_radius: float = 10.0) -> None:
         """
@@ -726,85 +758,85 @@ class NanoparticleTopology:
 
         self.net_topology = net_topology
                             
-    def add_np_to_output(self):
-        """
-        Insert a single new nanoparticle in series between the currently connected
-        nanoparticle and the output electrode (the last electrode in the network).
+    # def add_np_to_output(self):
+    #     """
+    #     Insert a single new nanoparticle in series between the currently connected
+    #     nanoparticle and the output electrode (the last electrode in the network).
 
-        Steps performed:
-        1. Identifies the nanoparticle currently connected to the output electrode.
-        2. Disconnects this nanoparticle from the output electrode.
-        3. Creates a new nanoparticle.
-        4. Connects this new nanoparticle between the previously connected nanoparticle and the output electrode.
-        5. Updates the net_topology matrix, NetworkX graph, and position dictionary.
+    #     Steps performed:
+    #     1. Identifies the nanoparticle currently connected to the output electrode.
+    #     2. Disconnects this nanoparticle from the output electrode.
+    #     3. Creates a new nanoparticle.
+    #     4. Connects this new nanoparticle between the previously connected nanoparticle and the output electrode.
+    #     5. Updates the net_topology matrix, NetworkX graph, and position dictionary.
 
-        Raises
-        ------
-        RuntimeError
-            If there are no electrodes defined, or if output electrode is not connected.
-        """
-        if not hasattr(self, 'N_electrodes') or self.N_electrodes < 1:
-            raise RuntimeError("No electrodes defined in the network.")
-        output_electrode_idx = self.N_electrodes-1
+    #     Raises
+    #     ------
+    #     RuntimeError
+    #         If there are no electrodes defined, or if output electrode is not connected.
+    #     """
+    #     if not hasattr(self, 'N_electrodes') or self.N_electrodes < 1:
+    #         raise RuntimeError("No electrodes defined in the network.")
+    #     output_electrode_idx = self.N_electrodes-1
 
-        # Find the nanoparticle connected to the output electrode (search net_topology)
-        matches = np.where(self.net_topology[:, 0] == (output_electrode_idx + 1))[0]
-        if len(matches) == 0:
-            raise RuntimeError(f"No nanoparticle is connected to output electrode (index {output_electrode_idx}).")
-        adj_np = matches[0]
+    #     # Find the nanoparticle connected to the output electrode (search net_topology)
+    #     matches = np.where(self.net_topology[:, 0] == (output_electrode_idx + 1))[0]
+    #     if len(matches) == 0:
+    #         raise RuntimeError(f"No nanoparticle is connected to output electrode (index {output_electrode_idx}).")
+    #     adj_np = matches[0]
         
-        prev_particle_count =   self.N_particles
-        self.N_particles    +=  1
+    #     prev_particle_count =   self.N_particles
+    #     self.N_particles    +=  1
 
-        # Prepare new topology row for the new nanoparticle
-        new_row     = np.full(self.net_topology.shape[1], self.NO_CONNECTION, dtype=int)
-        new_row[0]  = output_electrode_idx + 1  # Connect to electrode
-        new_row[1]  = adj_np                    # Connect to the previous adjacent nanoparticle
+    #     # Prepare new topology row for the new nanoparticle
+    #     new_row     = np.full(self.net_topology.shape[1], self.NO_CONNECTION, dtype=int)
+    #     new_row[0]  = output_electrode_idx + 1  # Connect to electrode
+    #     new_row[1]  = adj_np                    # Connect to the previous adjacent nanoparticle
 
-        self.net_topology = np.vstack((self.net_topology, new_row))
+    #     self.net_topology = np.vstack((self.net_topology, new_row))
 
-        # Update the adjacent nanoparticle's connection:
-        #  - Find the first free neighbor slot and connect it to the new node
-        #  - Remove its previous electrode connection, if present
-        free_spots = np.where(self.net_topology[adj_np, :] == self.NO_CONNECTION)[0]
-        if len(free_spots) == 0:
-            raise RuntimeError(f"No free neighbor slots in net_topology for nanoparticle {adj_np}.")
-        self.net_topology[adj_np, free_spots[0]]    = prev_particle_count
-        self.net_topology[adj_np, 0]                = self.NO_CONNECTION  # Remove old electrode connection
+    #     # Update the adjacent nanoparticle's connection:
+    #     #  - Find the first free neighbor slot and connect it to the new node
+    #     #  - Remove its previous electrode connection, if present
+    #     free_spots = np.where(self.net_topology[adj_np, :] == self.NO_CONNECTION)[0]
+    #     if len(free_spots) == 0:
+    #         raise RuntimeError(f"No free neighbor slots in net_topology for nanoparticle {adj_np}.")
+    #     self.net_topology[adj_np, free_spots[0]]    = prev_particle_count
+    #     self.net_topology[adj_np, 0]                = self.NO_CONNECTION  # Remove old electrode connection
 
-        # Update the NetworkX graph
-        electrode_node = -output_electrode_idx - 1
-        if self.G.has_edge(adj_np, electrode_node):
-            self.G.remove_edge(adj_np, electrode_node)
-        if self.G.has_edge(electrode_node, adj_np):
-            self.G.remove_edge(electrode_node, adj_np)
-        self.G.add_node(prev_particle_count)
-        self.G.add_edge(prev_particle_count, adj_np)
-        self.G.add_edge(adj_np, prev_particle_count)
-        self.G.add_edge(prev_particle_count, electrode_node)
-        self.G.add_edge(electrode_node, prev_particle_count)
+    #     # Update the NetworkX graph
+    #     electrode_node = -output_electrode_idx - 1
+    #     if self.G.has_edge(adj_np, electrode_node):
+    #         self.G.remove_edge(adj_np, electrode_node)
+    #     if self.G.has_edge(electrode_node, adj_np):
+    #         self.G.remove_edge(electrode_node, adj_np)
+    #     self.G.add_node(prev_particle_count)
+    #     self.G.add_edge(prev_particle_count, adj_np)
+    #     self.G.add_edge(adj_np, prev_particle_count)
+    #     self.G.add_edge(prev_particle_count, electrode_node)
+    #     self.G.add_edge(electrode_node, prev_particle_count)
 
-        # Assign a spatial position to the new nanoparticle (place at electrode for now)
-        if electrode_node in self.pos:
-            self.pos[prev_particle_count] = self.pos[electrode_node]
-        else:
-            self.pos[prev_particle_count] = (0, 0)  # fallback if no electrode position
+    #     # Assign a spatial position to the new nanoparticle (place at electrode for now)
+    #     if electrode_node in self.pos:
+    #         self.pos[prev_particle_count] = self.pos[electrode_node]
+    #     else:
+    #         self.pos[prev_particle_count] = (0, 0)  # fallback if no electrode position
 
-        # Move the electrode for clarity (especially for lattice layout)
-        x, y = self.pos[prev_particle_count]
-        if self.lattice:
-            # Move electrode to be just outside the grid boundary in a sensible way
-            if x == self.N_x:
-                self.pos[electrode_node] = (x + 1, y)
-            elif x == -1:
-                self.pos[electrode_node] = (x - 1, y)
-            elif y == self.N_y:
-                self.pos[electrode_node] = (x, y + 1)
-            elif y == -1:
-                self.pos[electrode_node] = (x, y - 1)
-        else:
-            # For random networks, shift electrode right or up for clarity
-            self.pos[electrode_node] = (x + 0.2, y + 0.2)
+    #     # Move the electrode for clarity (especially for lattice layout)
+    #     x, y = self.pos[prev_particle_count]
+    #     if self.lattice:
+    #         # Move electrode to be just outside the grid boundary in a sensible way
+    #         if x == self.N_x:
+    #             self.pos[electrode_node] = (x + 1, y)
+    #         elif x == -1:
+    #             self.pos[electrode_node] = (x - 1, y)
+    #         elif y == self.N_y:
+    #             self.pos[electrode_node] = (x, y + 1)
+    #         elif y == -1:
+    #             self.pos[electrode_node] = (x, y - 1)
+    #     else:
+    #         # For random networks, shift electrode right or up for clarity
+    #         self.pos[electrode_node] = (x + 0.2, y + 0.2)
 
     def get_net_topology(self) -> np.ndarray:
         """
@@ -813,8 +845,10 @@ class NanoparticleTopology:
         Returns
         -------
         np.ndarray
-            Network topology matrix (see class docstring for structure).
+            Network topology matrix.
         """
+        if self.net_topology.size == 0:
+            raise RuntimeError("Topology matrix not defined. Initialize a network first.")
         return self.net_topology.copy()
 
     def get_graph(self) -> nx.DiGraph:
@@ -825,7 +859,7 @@ class NanoparticleTopology:
         -------
         nx.DiGraph
         """
-        return self.G
+        return self.G.copy()
     
     def get_positions(self) -> Dict[int, Tuple[float, float]]:
         """
@@ -852,9 +886,9 @@ class NanoparticleTopology:
         RuntimeError
             If distance matrix hasn't been calculated
         """
-        if not hasattr(self, 'dist_matrix'):
-            raise RuntimeError("Distance matrix not calculated. Call pack_planar_circles first.")
-        return self.dist_matrix
+        if getattr(self, "dist_matrix", None) is None:
+            raise RuntimeError("Distance matrix not calculated. Initialize a network first.")
+        return self.dist_matrix.copy()
     
     def get_electrode_dist_matrix(self) -> np.ndarray:
         """Get the electrode distance matrix
@@ -870,9 +904,9 @@ class NanoparticleTopology:
         RuntimeError
             If electrode distance matrix hasn't been calculated
         """
-        if not hasattr(self, 'electrode_dist_matrix'):
-            raise RuntimeError("Electrode distance matrix not calculated. Call pack_planar_circles first.")
-        return self.electrode_dist_matrix
+        if getattr(self, "electrode_dist_matrix", None) is None:
+            raise RuntimeError("Electrode distance matrix not calculated. Attach electrodes first.")
+        return self.electrode_dist_matrix.copy()
     
     def get_radius(self) -> np.ndarray:
         """Get the radius of each NP
@@ -888,148 +922,127 @@ class NanoparticleTopology:
         RuntimeError
             If radius hasn't been calculated
         """
-        if not hasattr(self, "radius_vals"):
-            raise RuntimeError("Nanoparticle radius not defined. Call init_nanoparticle_radius first.")
-        return self.radius_vals
-
-    def validate_network(self) -> bool:
-        """
-        Validate the network topology.
-        
-        Checks:
-        1. Network connectivity (weak connectivity for directed graphs)
-        2. Consistency between net_topology matrix and NetworkX graph
-        3. Electrode connections
-        
-        Returns
-        -------
-        bool
-            True if the network is valid, False otherwise.
-            
-        Raises
-        ------
-        ValueError
-            If inconsistencies are found in the network topology
-        """
-        # Check network connectivity (using weak connectivity for directed graphs)
-        if not nx.is_weakly_connected(self.G):
-            raise ValueError("Network is not fully connected")
-            
-        # Check consistency between net_topology and graph
-        for node in range(self.N_particles):
-            graph_neighbors = set(n for n in self.G.neighbors(node) if n >= 0)
-            topo_neighbors = set(n for n in self.net_topology[node, 1:] if n != self.NO_CONNECTION)
-            if graph_neighbors != topo_neighbors:
-                raise ValueError(f"Inconsistency found in connections for node {node}")
-                
-        # Check electrode connections
-        for node in range(self.N_particles):
-            electrode = self.net_topology[node, 0]
-            if electrode != self.NO_CONNECTION:
-                if not self.G.has_edge(node, -(electrode)) or not self.G.has_edge(-(electrode), node):
-                    raise ValueError(f"Missing electrode connection for node {node}")
-                    
-        return True
+        if self.radius_vals is None:
+            raise RuntimeError("Nanoparticle radius not defined. Initialize a network first.")
+        return self.radius_vals.copy()
     
     def export_network(self, filepath: str) -> None:
         """
         Export the network configuration to a file.
         
-        This method saves:
-        1. Network topology matrix
-        2. Node positions
-        3. Electrode configurations
-        4. Network parameters (N_particles, N_junctions, etc.)
+        This method saves the complete geometric and topological state:
+        1. Network parameters and type (N_particles, N_electrodes, lattice, etc.)
+        2. Network topology matrix
+        3. Node positions
+        4. Nanoparticle radii
+        5. Distance matrices (NP-NP and Electrode-NP)
         
         Parameters
         ----------
         filepath : str
-            Path to save the network configuration file
+            Path to save the network configuration file (e.g., 'network.npy').
         """
+        # Basis-Attribute
         network_data = {
-            'net_topology': self.net_topology.tolist(),
-            'positions': {str(k): list(v) for k, v in self.pos.items()},
+            'network_type': getattr(self, 'network_type', None),
+            'lattice': self.lattice,
             'N_particles': self.N_particles,
             'N_electrodes': self.N_electrodes,
-            'N_junctions': self.N_junctions
+            'N_junctions': self.N_junctions,
+            'net_topology': self.net_topology, # numpy arrays werden durch pickle nativ unterstützt
+            'positions': {str(k): list(v) for k, v in self.pos.items()},
         }
         
-        if hasattr(self, 'N_x'):
+        # Gitter-Dimensionen (nur bei Lattice)
+        if self.network_type == 'lattice':
             network_data['N_x'] = self.N_x
             network_data['N_y'] = self.N_y
+            
+        # Geometrische Parameter (falls bereits initialisiert)
+        if self.radius_vals is not None:
+            network_data['radius_vals'] = self.radius_vals
+        if getattr(self, 'dist_matrix', None) is not None:
+            network_data['dist_matrix'] = self.dist_matrix
+        if getattr(self, 'electrode_dist_matrix', None) is not None:
+            network_data['electrode_dist_matrix'] = self.electrode_dist_matrix
             
         np.save(filepath, network_data, allow_pickle=True)
 
     def import_network(self, filepath: str) -> None:
         """
-        Import a network configuration from a file.
+        Import a network configuration from a file and reconstruct the graph.
         
         Parameters
         ----------
         filepath : str
-            Path to the network configuration file
+            Path to the network configuration file.
             
         Raises
         ------
         ValueError
-            If the file format is invalid or missing required data
+            If the file format is invalid or missing required data.
         """
         try:
             network_data = np.load(filepath, allow_pickle=True).item()
             
-            # Restore basic attributes
-            self.net_topology = np.array(network_data['net_topology'])
-            self.pos = {int(k) if k.isdigit() else int(k[1:]) if k.startswith('-') else k: 
-                       tuple(v) for k, v in network_data['positions'].items()}
+            # Basis-Attribute wiederherstellen
+            self.network_type = network_data.get('network_type')
+            self.lattice = network_data.get('lattice', False)
             self.N_particles = network_data['N_particles']
             self.N_electrodes = network_data['N_electrodes']
             self.N_junctions = network_data['N_junctions']
             
-            if 'N_x' in network_data:
-                self.N_x = network_data['N_x']
-                self.N_y = network_data['N_y']
+            if self.network_type == 'lattice':
+                self.N_x = network_data.get('N_x')
+                self.N_y = network_data.get('N_y')
                 
-            # Reconstruct the graph
+            # Arrays wiederherstellen
+            self.net_topology = np.array(network_data['net_topology'])
+            
+            if 'radius_vals' in network_data:
+                self.radius_vals = np.array(network_data['radius_vals'])
+            if 'dist_matrix' in network_data:
+                self.dist_matrix = np.array(network_data['dist_matrix'])
+            if 'electrode_dist_matrix' in network_data:
+                self.electrode_dist_matrix = np.array(network_data['electrode_dist_matrix'])
+                
+            # Positionen wiederherstellen (int() versteht auch negative Strings wie "-1")
+            self.pos = {int(k): tuple(v) for k, v in network_data['positions'].items()}
+                
+            # Den Graphen (NetworkX) neu aufbauen
             self.G = nx.DiGraph()
             self.G.add_nodes_from(range(self.N_particles))
-            self.G.add_nodes_from(range(-self.N_electrodes, 0))
+            if self.N_electrodes > 0:
+                self.G.add_nodes_from(range(-self.N_electrodes, 0))
             
-            # Add edges from topology matrix
+            # Kanten aus der Matrix rekonstruieren
             for node in range(self.N_particles):
-                # Add electrode connections
+                # Elektroden-Kanten (Spalte 0)
                 if self.net_topology[node, 0] != self.NO_CONNECTION:
-                    electrode = -self.net_topology[node, 0]
+                    electrode = -int(self.net_topology[node, 0])
                     self.G.add_edge(node, electrode)
                     self.G.add_edge(electrode, node)
                     
-                # Add nanoparticle connections
+                # Nanopartikel-Kanten (Spalten 1 bis Ende)
                 for neighbor in self.net_topology[node, 1:]:
                     if neighbor != self.NO_CONNECTION:
-                        self.G.add_edge(node, neighbor)
-                        self.G.add_edge(neighbor, node)
+                        neighbor_idx = int(neighbor)
+                        self.G.add_edge(node, neighbor_idx)
+                        self.G.add_edge(neighbor_idx, node)
                         
-            # Validate the imported network
-            self.validate_network()
-            
         except Exception as e:
             raise ValueError(f"Failed to import network configuration: {str(e)}")
-    
-    def __str__(self):
-        return f"Topology Class with {self.N_particles} particles, {self.N_junctions} junctions.\nNetwork Topology:\n{self.net_topology}"
     
 ###########################################################################################################################
 ###########################################################################################################################
 
 if __name__ == '__main__':
 
-    # Lattice
-    #########
-    N_x, N_y = 5,3
-    electrode_pos = [[0,0],[2,0],[4,0],[4,2]]
+    N_x, N_y = 3,3
+    electrode_pos = [[0,0],[2,0],[0,2],[2,2]]
     radius = 10.0
     lattice_net = NanoparticleTopology()
 
-    # Build Network and attach Electrodes
     lattice_net.lattice_network(N_x, N_y, radius)
     lattice_net.add_electrodes_to_lattice_net(electrode_pos)
 
@@ -1038,28 +1051,6 @@ if __name__ == '__main__':
     lattice_e_dist = lattice_net.get_electrode_dist_matrix()
     lattice_radius = lattice_net.get_radius()
 
-    print(lattice_net)
     print(lattice_pos)
     print(lattice_e_dist)
     print(lattice_radius)
-
-    # lattice_net.add_electrodes_to_lattice_net(electrode_pos)
-    # lattice_net.add_np_to_output()
-    # is_valid = lattice_net.validate_network()
-    
-    # print("This Network is valid!\n") if is_valid else print("This network is not valid!\n")
-    
-    # Disordered Network Topology
-    #############################
-    # N_particles     = 20
-    # electrode_pos   = [[-1,-1],[-1,1],[1,-1],[1,1]]
-    # rng_net         = NanoparticleTopology()
-
-    # # Build Network and attach Electrodes
-    # rng_net.random_network(N_particles)
-    # rng_net.add_electrodes_to_random_net(electrode_pos)
-    # rng_net.add_np_to_output()
-    # is_valid = rng_net.validate_network()
-    # print(lattice_net)
-    # print("This Network is valid!") if is_valid else print("This network is not valid!")
-
