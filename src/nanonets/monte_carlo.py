@@ -41,7 +41,6 @@ spec = [
     ('time_per_it', float64[::1]),                # Time values per iteration
     ('target_observable_per_it', float64[::1]),   # List of observable values
     ('N_rates', int64),                           # Number of tunneling events
-    ('tau_0', float64),                           # Slowest linear time constant
 ]
 
 @jitclass(spec)
@@ -57,7 +56,7 @@ class MonteCarlo:
     Attributes
     ----------
     N_particles : int
-    Number of nanoparticles in the network.
+        Number of nanoparticles in the network.
     N_electrodes : int
         Number of electrodes (including constant and floating).
     N_rates : int
@@ -116,7 +115,7 @@ class MonteCarlo:
 
     def __init__(self, charge_vector: np.ndarray, potential_vector: np.ndarray, inv_capacitance_matrix: np.ndarray, const_capacitance_values: np.ndarray,
                  temperatures: np.ndarray, resistances: np.ndarray, adv_index_rows: np.ndarray, adv_index_cols: np.ndarray, N_electrodes: int,
-                 N_particles: int, floating_electrodes: np.ndarray, tau_0: float) -> None:
+                 N_particles: int, floating_electrodes: np.ndarray) -> None:
         """
         Initialize the KMC simulation state and all model parameters.
 
@@ -144,8 +143,6 @@ class MonteCarlo:
             Number of nanoparticles.
         floating_electrodes : ndarray
             Indices of floating electrodes.
-        tau_0 : float
-            Slowest linear time constant.
         """
         # Physical constants
         self.ele_charge     = 0.160217662       # [aC]
@@ -164,9 +161,10 @@ class MonteCarlo:
         self.N_electrodes                   = N_electrodes
         self.N_particles                    = N_particles
         self.N_rates                        = len(self.adv_index_rows)
-        self.tau_0                          = tau_0
 
         # Simulation state variables
+        self.tunnel_rates                   = np.zeros(self.N_rates, dtype=np.float64)
+        self.kmc_cum_sum                    = np.zeros(self.N_rates, dtype=np.float64)
         self.counter_output_jumps_pos       = 0
         self.counter_output_jumps_neg       = 0
         self.total_jumps                    = 0
@@ -596,7 +594,7 @@ class MonteCarlo:
         r_min = R_min * self.ele_charge * self.ele_charge * 1e-12
         
         for k in range(self.N_rates):
-            self.resistances[k] = r_max + (r_max - r_min) * np.exp(-self.I_tilde[k] / I0)
+            self.resistances[k] = r_min + (r_max - r_min) * np.exp(-self.I_tilde[k] / I0)
 
     def run_equilibration_steps_var_resistance(self, n_jumps: int = 10_000, I0: float = 7.5, tau_0: float = 1e-8, R_max: float = 25.0, R_min: float = 10.0) -> int:
         """
@@ -758,8 +756,8 @@ class MonteCarlo:
         else:
             self.target_observable_mean = 0.0
 
-    def kmc_time_simulation_trajectory_var_resistance(self, target_electrode: int, time_target: float,
-                                                      I0: float = 7.5, tau_0: float = 1e-8, R_max: float = 25.0, R_min: float = 10.0) -> None:
+    def kmc_time_simulation_trajectory_var_resistance(self, target_electrode: int, time_target: float, I0: float = 7.5, tau_0: float = 1e-8,
+                                                      R_max: float = 25.0, R_min: float = 10.0) -> None:
         """
         Run kinetic Monte Carlo simulation strictly up to a target simulation time with variable (memristive) resistances. 
         Ideal for time-sliced AC simulations in memristive networks.
@@ -887,7 +885,7 @@ class MonteCarlo:
 
     ### OUTDATED / KEPT FOR NOW
     ###########################
-    
+
     # def calc_tunnel_rates(self):
     #     """
     #     Compute tunneling rates for all possible tunneling events (finite T only).
