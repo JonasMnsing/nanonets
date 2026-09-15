@@ -1,10 +1,13 @@
+from . import topology
+from . import electrostatic
 from . import tunneling
-from . import monte_carlo
+from .monte_carlo import MonteCarlo
+
 import numpy as np
 import pandas as pd
 import os.path
 
-class Simulation(tunneling.NanoparticleTunneling):
+class Simulation:
     """
     Simulation class for single-electron effects in nanoparticle networks.
 
@@ -53,8 +56,6 @@ class Simulation(tunneling.NanoparticleTunneling):
         Physical parameters for second NP type; may specify 'np_index' for assignment.
     seed : int, optional
         Random seed for reproducibility.
-    high_C_output : bool, optional
-        If True, adds a high-capacitance output electrode.
     kwargs : dict, optional
         Additional options (e.g., del_n_junctions: int for disordered/sparse networks).
 
@@ -72,7 +73,7 @@ class Simulation(tunneling.NanoparticleTunneling):
     """
 
     def __init__(self, topology_parameter : dict, folder: str = '', add_to_path: str = "", res_info: dict = None, res_info2: dict = None,
-                 np_info: dict = None, np_info2: dict = None, seed: int = None, high_C_output: bool = False, pack_optimizer: bool = False, **kwargs):
+                 np_info: dict = None, np_info2: dict = None, seed: int = None, **kwargs):
         """
         Defines network topology, electrostatic properties, and tunneling junctions for a given topology.
 
@@ -96,10 +97,9 @@ class Simulation(tunneling.NanoparticleTunneling):
             Parameters for second nanoparticle type (may include 'np_index' for which NPs are affected).
         seed : int, optional
             Random seed for reproducibility.
-        high_C_output : bool, optional
-            Whether to add a high-capacitance output electrode (default: False).
         kwargs : dict
             Additional keyword arguments (e.g., 'del_n_junctions').
+        
 
         Raises
         ------
@@ -112,6 +112,100 @@ class Simulation(tunneling.NanoparticleTunneling):
         - Network can have two nanoparticle types for heterogeneity.
         - All physical quantities are initialized, and key file paths are pre-set.
         """
+
+        # --- 1. Parameter Defaults Setup ---
+        electrode_type = kwargs.get('electrode_type', topology_parameter.get('electrode_type', 'constant'))
+
+        if np_info is None:
+            np_info = {"eps_r": 2.6, "eps_s": 3.9, "mean_radius": 10.0, "std_radius": 0.0}
+            
+        if res_info is None:
+            res_info = {"mean_R": 25.0, "std_R": 0.0, "dynamic": False}
+
+        self.dynamic_resistances = res_info.get('dynamic', False)
+        self.dynamic_resistances_info = res_info
+
+        # --- 2. TOPOLOGY COMPOSITION ---
+        # Init Topology
+        self.topology = topology.NanoparticleTopology(seed=seed)
+
+        # Define network topology
+        if 'Nx' in topology_parameter:
+            if topology_parameter['Nx'] == 1 and topology_parameter['Ny'] == 1:
+                self.network_topology_type = 'set'
+            else:
+                self.network_topology_type = 'lattice'
+        elif 'Np' in topology_parameter:
+            self.network_topology_type = 'random'
+        else:
+            self.network_topology_type = 'custom'
+
+        # Build Topology
+        if self.network_topology_type == "lattice":
+            self.topology.lattice_network(N_x=topology_parameter["Nx"], N_y=topology_parameter["Ny"], mean_radius=np_info['mean_radius'])
+            self.topology.add_electrodes_to_lattice_net(particle_pos=topology_parameter["e_pos"])
+            path_var = f'Nx={topology_parameter["Nx"]}_Ny={topology_parameter["Ny"]}_Ne={len(topology_parameter["e_pos"])}{add_to_path}.csv'
+            
+        elif self.network_topology_type == "random":
+            delta = kwargs.get('delta', 0.5)
+            max_attempts = kwargs.get('max_attempts', 5)
+            packing_kwargs = kwargs.get('packing_kwargs', {})
+
+            self.topology.random_network(N_particles=topology_parameter["Np"], mean_radius=np_info['mean_radius'], std_radius=np_info['std_radius'],
+                                         delta=delta, max_attempts=max_attempts, **packing_kwargs)
+            if np_info2 is not None:
+                if 'np_index' in np_info2:
+                    self.topology.update_nanoparticle_radius(np_info2['np_index'], np_info2['mean_radius'], np_info2['std_radius'],
+                                                            delta=delta, max_attempts=max_attempts, **packing_kwargs)
+                elif 'N' in np_info2:
+                    self.topology.update_nanoparticle_radius_at_random(np_info2['N'], np_info2['mean_radius'], np_info2['std_radius'],
+                                                                                delta=delta, max_attempts=max_attempts, **packing_kwargs)
+                    
+            self.topology.add_electrodes_to_random_net(electrode_positions=topology_parameter["e_pos"])
+            path_var = f'Np={topology_parameter["Np"]}_Ne={len(topology_parameter["e_pos"])}{add_to_path}.csv'
+            
+        elif self.network_topology_type == "set":
+            pass
+            
+        else:
+            pass
+
+        del_n_junc = kwargs.get("delete_n_junctions", None)
+        if del_n_junc is not None:
+            self.topology.delete_n_junctions(del_n_junc)
+
+
+        # --- 3. ELECTROSTATIC COMPOSITION ---
+        # Init Electrostatic
+        self.electrostatic = electrostatic.NanoparticleElectrostatic(self.topology, electrode_type)
+        
+        if self.network_topology_type != "set":
+            self.electrostatic.calc_capacitance_matrix(np_info['eps_r'], np_info['eps_s'])
+            self.electrostatic.calc_electrode_capacitance_matrix()
+
+        # --- 4. TUNNELING COMPOSITION ---
+        # Init Tunneling
+        self.tunneling = tunneling.NanoparticleTunneling(self.electrostatic)
+        
+        if self.network_topology_type != "set":
+            self.tunneling.init_adv_indices()
+            self.tunneling.init_junction_resistances(res_info['mean_R'], res_info['std_R'])
+            if res_info2 is not None:
+                self.tunneling.update_junction_resistances_at_random(res_info2['N'], res_info2['mean_R'], res_info2['std_R'])
+            self.tunneling.init_const_capacitance_values()
+
+        # --- 5. PATHS ---
+        self.folder = folder
+        self.path1  = os.path.join(folder, path_var)
+        self.path2  = os.path.join(folder, f'mean_state_{path_var}')
+        self.path3  = os.path.join(folder, f'net_currents_{path_var}')
+
+        
+        
+
+
+
+        #### OLD
 
         # --- Electrode type and inheritance ---
         if "electrode_type" in kwargs:
