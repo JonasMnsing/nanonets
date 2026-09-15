@@ -406,7 +406,6 @@ class NanoparticleTunneling:
         for (pair, new_R) in zip(chosen_pairs, new_resistances):
             self.update_junction_resistances([pair], new_R)
 
-    # # TODO: Allow Gauss distributed
     # def update_nanoparticle_resistances(self, nanoparticles: List[int], R: float = 25) -> None:
     #     """
     #     Set all resistances in self.resistances corresponding to jumps
