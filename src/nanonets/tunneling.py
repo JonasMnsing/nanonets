@@ -124,8 +124,8 @@ class NanoparticleTunneling:
         
         # Map which nanoparticle is attached to each electrode (first column of net_topology)
         nth_e, nth_np = 1, 0
-        while (nth_np < self.N_particles) and (nth_e <= self.N_electrodes):
-            if int(self.net_topology[nth_np, 0]) == nth_e:
+        while (nth_np < n_parts) and (nth_e <= n_elec):
+            if int(self.electro.topo.net_topology[nth_np, 0]) == nth_e:
                 # The nth_e electrode is connected to nth_np nanoparticle
                 connections[nth_e - 1, 1] = nth_np
                 nth_e += 1
