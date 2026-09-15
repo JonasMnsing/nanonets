@@ -909,6 +909,18 @@ class NanoparticleTopology:
     #         # For random networks, shift electrode right or up for clarity
     #         self.pos[electrode_node] = (x + 0.2, y + 0.2)
 
+    def get_particle_electrode_count(self) -> Tuple[int, int]:
+        """
+        Returns
+        -------
+        N_particles : int
+            Number of nanoparticles
+        N_electrodes : int
+            Number of electrodes
+        """
+        # Werte sicher aus dem Topologie-Objekt via Komposition holen
+        return self.N_particles, self.N_electrodes
+
     def get_net_topology(self) -> np.ndarray:
         """
         Return a copy of the network topology matrix.
