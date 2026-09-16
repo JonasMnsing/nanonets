@@ -72,7 +72,7 @@ class Simulation:
     - For further physics, data, and usage details, see parent class docstrings.
     """
 
-    def __init__(self, topology_parameter : dict, folder: str = '', add_to_path: str = "", res_info: dict = None, res_info2: dict = None,
+    def __init__(self, topology_parameter : dict, self_cap: float = 0.28, folder: str = '', add_to_path: str = "", res_info: dict = None, res_info2: dict = None,
                  np_info: dict = None, np_info2: dict = None, seed: int = None, **kwargs):
         """
         Defines network topology, electrostatic properties, and tunneling junctions for a given topology.
@@ -98,7 +98,7 @@ class Simulation:
         seed : int, optional
             Random seed for reproducibility.
         kwargs : dict
-            Additional keyword arguments (e.g., 'del_n_junctions').
+            Additional keyword arguments.
         
 
         Raises
@@ -144,7 +144,7 @@ class Simulation:
         if self.network_topology_type == "lattice":
             self.topology.lattice_network(N_x=topology_parameter["Nx"], N_y=topology_parameter["Ny"], mean_radius=np_info['mean_radius'])
             self.topology.add_electrodes_to_lattice_net(particle_pos=topology_parameter["e_pos"])
-            path_var = f'Nx={topology_parameter["Nx"]}_Ny={topology_parameter["Ny"]}_Ne={len(topology_parameter["e_pos"])}{add_to_path}.csv'
+            path_var = f'Nx={topology_parameter["Nx"]}_Ny={topology_parameter["Ny"]}_Ne={len(topology_parameter["e_pos"])}{add_to_path}'
             
         elif self.network_topology_type == "random":
             delta = kwargs.get('delta', 0.5)
@@ -162,7 +162,7 @@ class Simulation:
                                                                                 delta=delta, max_attempts=max_attempts, **packing_kwargs)
                     
             self.topology.add_electrodes_to_random_net(electrode_positions=topology_parameter["e_pos"])
-            path_var = f'Np={topology_parameter["Np"]}_Ne={len(topology_parameter["e_pos"])}{add_to_path}.csv'
+            path_var = f'Np={topology_parameter["Np"]}_Ne={len(topology_parameter["e_pos"])}{add_to_path}'
             
         elif self.network_topology_type == "set":
             pass
@@ -170,16 +170,17 @@ class Simulation:
         else:
             pass
 
+        # Delete Junctions after Topology was build
         del_n_junc = kwargs.get("delete_n_junctions", None)
         if del_n_junc is not None:
             self.topology.delete_n_junctions(del_n_junc)
-
 
         # --- 3. ELECTROSTATIC COMPOSITION ---
         # Init Electrostatic
         self.electrostatic = electrostatic.NanoparticleElectrostatic(self.topology, electrode_type)
         
         if self.network_topology_type != "set":
+            self.electrostatic.constant_self_capacitance(self_cap=self_cap)
             self.electrostatic.calc_capacitance_matrix(np_info['eps_r'], np_info['eps_s'])
             self.electrostatic.calc_electrode_capacitance_matrix()
 
@@ -196,387 +197,147 @@ class Simulation:
 
         # --- 5. PATHS ---
         self.folder = folder
-        self.path1  = os.path.join(folder, path_var)
-        self.path2  = os.path.join(folder, f'mean_state_{path_var}')
-        self.path3  = os.path.join(folder, f'net_currents_{path_var}')
+        self.path1 = os.path.join(folder, f'{path_var}.csv')
+        self.path2 = os.path.join(folder, f'mean_state_{path_var}.parquet')
+        self.path3 = os.path.join(folder, f'net_currents_{path_var}.parquet')
+        self.path4 = os.path.join(folder, f'resistances_{path_var}.parquet')
 
-        
-        
-
-
-
-        #### OLD
-
-        # --- Electrode type and inheritance ---
-        if "electrode_type" in kwargs:
-            electrode_type  = kwargs['electrode_type']
-        else:
-            electrode_type  = topology_parameter['electrode_type']
-        super().__init__(electrode_type, seed)
-
-        # --- Topology type ---
-        if 'Nx' in topology_parameter:
-            if ((topology_parameter['Nx'] == 1) and (topology_parameter['Ny'] == 1)):
-                self.network_topology = 'set'
-            else:
-                self.network_topology = 'lattice'
-        elif 'Np' in topology_parameter:
-            self.network_topology = 'random'
-        else:
-            self.network_topology = None
-
-        # --- Default NP info ---
-        if np_info is None:
-            np_info = {
-                "eps_r"         : 2.6,  # Permittivity of molecular junction 
-                "eps_s"         : 3.9,  # Permittivity of oxide layer
-                "mean_radius"   : 10.0, # average nanoparticle radius
-                "std_radius"    : 0.0   # standard deviation of nanoparticle radius
-            }
-
-        # --- Default Resistance info ---
-        if res_info is None:
-            res_info = {
-                "mean_R"    : 25.0, # Average resistance
-                "std_R"     : 0.0,  # Standard deviation of resistances
-                "dynamic"   : False # Dynamic or constant resistances
-            }
-        
-        # --- Dynamic Junction Resistances ---
-        self.dynamic_resistances = res_info['dynamic']
-        if self.dynamic_resistances:
-            self.dynamic_resistances_info = res_info
-
-        # --- Lattice topology ---
-        if self.network_topology == "lattice":
-            # Path variable
-            path_var = f'Nx={topology_parameter["Nx"]}_Ny={topology_parameter["Ny"]}_Ne={len(topology_parameter["e_pos"])}'+add_to_path+'.csv'
-            
-            # --- Topology ---
-            self.lattice_network(N_x=topology_parameter["Nx"], N_y=topology_parameter["Ny"])
-            self.add_electrodes_to_lattice_net(topology_parameter["e_pos"])
-
-            if high_C_output:
-                self.add_np_to_output()
-                                    
-        # --- Random Topology ---
-        elif self.network_topology == "random":
-            # Path variable
-            path_var = f'Np={topology_parameter["Np"]}_Ne={len(topology_parameter["e_pos"])}'+add_to_path+'.csv'
-            
-            # --- Topology ---
-            self.random_network(N_particles=topology_parameter["Np"])
-            self.add_electrodes_to_random_net(electrode_positions=topology_parameter["e_pos"])
-
-            if high_C_output:
-                self.add_np_to_output()
-
-        # --- Single Electron Transistor ---      
-        elif self.network_topology == "set":
-            self.init_SET(np_info['mean_radius'], np_info['eps_r'], np_info['eps_s'], res_info['mean_R'], res_info['std_R'])
-            path_var = 'set'+add_to_path+'.csv'
-        
-        else:
-            # Path variable
-            path_var = 'custom_network'+add_to_path+'.csv'
-        
-        if self.network_topology != "set":
-            # --- Electrostatics ---
-            if self.network_topology is not None:
-                self.init_nanoparticle_radius(np_info['mean_radius'], np_info['std_radius'])
-                if np_info2 is not None:
-                    self.update_nanoparticle_radius(np_info2['np_index'], np_info2['mean_radius'], np_info2['std_radius'])
-                if pack_optimizer:
-                    self.pack_planar_circles()
-                else:
-                    self.pack_lattice()
-            else:
-                self.net_topology           = kwargs["net_topology"]
-                self.dist_matrix            = kwargs["dist_matrix"]
-                self.electrode_dist_matrix  = kwargs["electrode_dist_matrix"]
-                self.radius_vals            = kwargs["radius_vals"]
-                self.N_particles            = self.electrode_dist_matrix.shape[1]
-                self.N_electrodes           = self.electrode_dist_matrix.shape[0]
-                self.N_junctions            = self.net_topology.shape[1]-1
-
-            self.calc_capacitance_matrix(np_info['eps_r'], np_info['eps_s'])
-            self.calc_electrode_capacitance_matrix()
-
-            # --- Tunneling ---
-            self.init_adv_indices()
-            self.init_junction_resistances(res_info['mean_R'], res_info['std_R'])
-            if res_info2 is not None:
-                self.update_junction_resistances_at_random(res_info2['N'], res_info2['mean_R'], res_info2['std_R'])
-            self.init_const_capacitance_values()
-
-        # --- Path ---
-        self.folder = folder
-        self.path1  = folder + path_var
-        self.path2  = folder + 'mean_state_'    + path_var
-        self.path3  = folder + 'net_currents_'  + path_var
-
-    def run_static_voltages(self, voltages: np.ndarray, target_electrode: int, T_val: float = 0.1, sim_dic: dict = None,
-                            save_th: int = None, verbose: bool = False):
+    def run_static_voltages(self, voltages: np.ndarray, target_electrode: int, T_val: float = 0.01, sim_dic: dict = None,
+                            save_th: int = None, verbose: bool = False, **dyn_res_kwargs):
         """
         Run an ensemble of Kinetic Monte Carlo trajectories at fixed electrode voltages 
         to extract the steady-state macroscopic current.
         """
         
-        # --- Default Ensemble Simulation Parameters ---
+        # --- Default Simulation Parameters ---
         if sim_dic is None:
             sim_dic = {
-                "n_trajectories" : 400,         # Number of independent KMC runs per voltage
-                "sim_time"       : 3.0e-6,      # Production duration per trajectory [s]
-                "eq_time"        : 1.5e-6,      # Equilibration duration per trajectory [s]
-                "ac_time"        : 150e-9,      # Base parameter for Numba initialization
-                "max_jumps"      : 20000,       # Safety break
-                "max_eq_jumps"   : 100000
+                "n_trajectories" : 400,     # Number of independent KMC runs per voltage
+                "max_jumps"      : 20000,   # Number of productions KMC steps
+                "max_eq_jumps"   : 100000   # Number of equilibration KMC steps
             }
 
-        n_trajectories  = sim_dic.get('n_trajectories', 400)
-        sim_time        = sim_dic.get('sim_time', 3.0e-6)
-        eq_time         = sim_dic.get('eq_time', 1.5e-6)
-        ac_time         = sim_dic.get('ac_time', 150e-9)
-        max_jumps       = sim_dic.get('max_jumps', 20000)
-        max_eq_jumps    = sim_dic.get('max_eq_jumps', 100000)
+        n_trajectories = sim_dic.get('n_trajectories', 400)
+        max_jumps = sim_dic.get('max_jumps', 20000)
+        max_eq_jumps = sim_dic.get('max_eq_jumps', 100000)
 
-        floating_electrodes = np.where(self.electrode_type == 'floating')[0]
-        
-        # Init global storage lists
-        self.clear_simulation_outputs()
-        
+        if self.dynamic_resistances:
+            I0_val = dyn_res_kwargs.get('I0', 7.5)
+            tau_0 = dyn_res_kwargs.get('tau_0', 1e-8)
+            R_max = dyn_res_kwargs.get('R_max', 25.0)
+            R_min = dyn_res_kwargs.get('R_min', 10.0)
+
+
+        n_voltages = len(voltages)
+        n_junctions = len(self.tunneling.adv_index_rows)
+        N_particles, N_electrodes = self.topology.get_particle_electrode_count()
+
+        # Pre-allocate Arrays
+        self.observable_storage = np.zeros(n_voltages)
+        self.observable_error_storage = np.zeros(n_voltages)
+        self.jump_storage = np.zeros(n_voltages)
+        self.eq_jump_storage = np.zeros(n_voltages)
+        self.time_storage = np.zeros(n_voltages)
+        self.potential_storage = np.zeros((n_voltages, N_particles + N_electrodes))
+
+        if verbose:
+            self.state_storage = np.zeros((n_voltages, N_particles))
+            self.network_current_storage = np.zeros((n_voltages, n_junctions))
+            if self.dynamic_resistances:
+                self.resistance_storage = np.zeros((n_voltages, n_junctions))
+
         j = 0
         for i, voltage_values in enumerate(voltages):
             
             # --- Get all CONSTANT KMC model input arrays ---
-            inv_capacitance_matrix          = self.get_inv_capacitance_matrix()
-            const_capacitance_values        = self.get_const_capacitance_values()
-            N_particles, N_electrodes       = self.get_particle_electrode_count()
-            adv_index_rows, adv_index_cols  = self.get_advanced_indices()
-            temperatures                    = self.get_const_temperatures(T=T_val)
-            resistances                     = self.get_tunneling_rate_prefactor()
+            inv_capacitance_matrix = np.ascontiguousarray(self.electrostatic.get_inv_capacitance_matrix(), dtype=np.float64)
+            const_capacitance_values = np.ascontiguousarray(self.tunneling.get_const_capacitance_values(), dtype=np.float64)
+            adv_index_rows, adv_index_cols = self.tunneling.get_advanced_indices()
+
+            adv_index_rows = np.ascontiguousarray(adv_index_rows, dtype=np.int64)
+            adv_index_cols = np.ascontiguousarray(adv_index_cols, dtype=np.int64)
+            floating_electrodes = np.ascontiguousarray(np.where(self.electrostatic.electrode_type == 'floating')[0], dtype=np.int64)
+
+            temperatures = np.ascontiguousarray(self.tunneling.get_const_temperatures(T=T_val), dtype=np.float64)
+            resistances = np.ascontiguousarray(self.tunneling.get_tunneling_rate_prefactor(), dtype=np.float64)
 
             # --- Preallocate arrays for this voltage's ensemble ---
             ens_observables = np.zeros(n_trajectories)
-            ens_potentials  = np.zeros((n_trajectories, N_particles + N_electrodes))
-            ens_jumps       = np.zeros(n_trajectories)
+            ens_potentials = np.zeros((n_trajectories, N_particles + N_electrodes))
+            ens_jumps = np.zeros(n_trajectories)
+            ens_times = np.zeros(n_trajectories)
+
             if verbose:
-                ens_charges     = np.zeros((n_trajectories, N_particles))
-                ens_currents    = np.zeros((n_trajectories, len(adv_index_rows)))
+                ens_charges = np.zeros((n_trajectories, N_particles))
+                ens_currents = np.zeros((n_trajectories, len(adv_index_rows)))
+                ens_resistances = np.zeros((n_trajectories, len(adv_index_rows)))
 
             # =======================================================
             # ENSEMBLE TRAJECTORY LOOP
             # =======================================================
             for traj in range(n_trajectories):
-                
+
                 # Update electrostatics strictly for this fresh trajectory
-                self.init_charge_vector(voltage_values=voltage_values)
-                self.init_potential_vector(voltage_values=voltage_values)
-                charge_vector    = self.get_charge_vector()
-                potential_vector = self.get_potential_vector()
+                self.electrostatic.init_charge_vector(voltage_values=voltage_values)
+                self.electrostatic.init_potential_vector(voltage_values=voltage_values)
+                charge_vector = np.ascontiguousarray(self.electrostatic.get_charge_vector(), dtype=np.float64)
+                potential_vector = np.ascontiguousarray(self.electrostatic.get_potential_vector(), dtype=np.float64)
 
                 # Instantiate (Numba-optimized) model
-                self.model = monte_carlo.MonteCarlo(
+                self.model = MonteCarlo(
                     charge_vector, potential_vector, inv_capacitance_matrix, const_capacitance_values,
                     temperatures, resistances, adv_index_rows, adv_index_cols, N_electrodes, N_particles,
-                    floating_electrodes, ac_time
+                    floating_electrodes
                 )
-
-                # 1. Equilibrate
-                eq_jumps = self.model.run_equilibration_duration(eq_time, max_eq_jumps)
                 
-                # 2. Production Run
-                self.model.kmc_simulation_trajectory(target_electrode, sim_time, max_jumps)
+                # Equilibrate and Production Run
+                if self.dynamic_resistances:
+                    eq_jumps = self.model.run_equilibration_steps_var_resistance(max_eq_jumps, I0_val, tau_0, R_max, R_min)
+                    self.model.kmc_simulation_trajectory_var_resistance(target_electrode, max_jumps, I0_val, tau_0, R_max, R_min)
+                else:
+                    eq_jumps = self.model.run_equilibration_steps(max_eq_jumps)
+                    self.model.kmc_simulation_trajectory(target_electrode, max_jumps)
 
-                # 3. Store this specific trajectory's results
-                ens_observables[traj]   = self.model.target_observable_mean
+                # Store this specific trajectory's results
+                ens_observables[traj] = self.model.target_observable_mean
                 ens_potentials[traj, :] = self.model.potential_mean
-                ens_jumps[traj]         = self.model.total_jumps
+                ens_jumps[traj] = self.model.total_jumps
+                ens_times[traj] = self.model.time
 
                 if verbose:
-                    ens_charges[traj, :]    = self.model.charge_mean
-                    ens_currents[traj, :]   = self.model.network_currents
+                    ens_charges[traj, :] = self.model.charge_mean
+                    ens_currents[traj, :] = self.model.network_currents
+                    ens_resistances[traj, :] = self.model.resistances
 
             # =======================================================
             # ENSEMBLE AVERAGING
             # =======================================================
-            self.observable_storage.append(np.mean(ens_observables))
-            # Standard Error of the Mean = std / sqrt(N)
-            self.observable_error_storage.append(np.std(ens_observables, ddof=1) / np.sqrt(n_trajectories))
+            self.observable_storage[i] = np.mean(ens_observables)
+            self.observable_error_storage[i] = np.std(ens_observables, ddof=1) / np.sqrt(n_trajectories)
             
-            self.potential_storage.append(np.mean(ens_potentials, axis=0))
-            self.eq_jump_storage.append(eq_jumps) 
-            self.jump_storage.append(np.mean(ens_jumps))
-            self.time_storage.append(sim_time)
+            self.potential_storage[i, :] = np.mean(ens_potentials, axis=0)
+            self.eq_jump_storage[i] = eq_jumps
+            self.jump_storage[i] = np.mean(ens_jumps)
+            self.time_storage[i] = np.mean(ens_times)
 
             if verbose:
-                self.state_storage.append(np.mean(ens_charges, axis=0))
-                self.network_current_storage.append(np.mean(ens_currents, axis=0))
-
+                self.state_storage[i, :] = np.mean(ens_charges, axis=0)
+                self.network_current_storage[i, :] = np.mean(ens_currents, axis=0)
+                if self.dynamic_resistances:
+                    self.resistance_storage[i, :] = np.mean(ens_resistances, axis=0)
 
             # --- Periodically save to disk ---
             if (save_th is not None and ((i + 1) % save_th == 0)):
-                self.data_to_path(voltages[j:(i + 1),:], self.path1)
-                self.potential_to_path(self.path2)
+                self.data_to_path(voltages[:(i + 1), :], self.path1)
+                self.potential_to_path(self.path2, end_idx=i+1)
                 if verbose:
-                    self.network_current_to_path(self.path3)
-                self.clear_simulation_outputs()
-                j = i + 1
-    
-    
-    # def run_static_voltages(self, voltages : np.ndarray, target_electrode : int, T_val: float = 0.1, sim_dic: dict = None, save_th: int = None, verbose: bool = False):
-    #     """
-    #     Run a kinetic Monte Carlo simulation at fixed electrode voltages, estimating either the steady-state
-    #     current or, for floating electrodes, the equilibrium potential at a selected electrode.
-
-    #     Parameters
-    #     ----------
-    #     voltages : np.ndarray
-    #         2D array of electrode voltages. Each row is a distinct set of electrode voltages [V].
-    #     target_electrode : int
-    #         Index of the electrode for which to record current (constant) or potential (floating).
-    #     T_val : float, optional
-    #         Network temperature [K]. Default: 1.0.
-    #     sim_dic : dict, optional
-    #         Dictionary of simulation parameters:
-    #             error_th        : Target relative error of the main observable.
-    #             max_jumps       : Maximum KMC steps per voltage point.
-    #             eq_steps        : Number of equilibration KMC steps before measurement.
-    #             jumps_per_batch : KMC steps per batch.
-    #             kmc_counting    : If True, use event-counting for current.
-    #             min_batches     : Minimum measurement batches.
-    #     save_th : int, optional
-    #         Frequency (in voltage steps) with which simulation data is saved to file.
-    #     verbose : bool, optional
-    #         If True, records and stores extra simulation data (longer runtime, larger outputs).
-
-    #     Returns
-    #     -------
-    #     None
-    #         Results are saved to file and/or stored in class attributes.
-    #     """
-    #     # Round voltages to 0.01 mV
-    #     voltages = np.round(voltages,5)
-        
-    #     # --- Default Simulation Parameter ---
-    #     if sim_dic is None:
-    #         sim_dic =   {
-    #             "duration"        : False,
-    #             "ac_time"         : 40e-9,
-    #             "error_th"        : 0.05,
-    #             "max_jumps"       : 10000000,
-    #             "n_eq"            : 100000,
-    #             "n_per_batch"     : 2000,
-    #             "kmc_counting"    : False,
-    #             "min_batches"     : 5
-    #         }
-
-    #     # --- Get Simulation Parameter ---            
-    #     error_th        = sim_dic['error_th']
-    #     max_jumps       = sim_dic['max_jumps']
-    #     n_eq            = sim_dic['n_eq']
-    #     n_per_batch     = sim_dic['n_per_batch']
-    #     kmc_counting    = sim_dic['kmc_counting']
-    #     min_batches     = sim_dic['min_batches']
-    #     duration        = sim_dic['duration']
-    #     ac_time         = sim_dic['ac_time']
-
-    #     # Identify floating electrodes and detect if target electrode is floating
-    #     floating_electrodes = np.where(self.electrode_type == 'floating')[0]
-    #     output_potential    = (self.electrode_type[target_electrode] == 'floating')
-        
-    #     # Init storage lists
-    #     self.clear_simulation_outputs()
-        
-    #     j = 0
-    #     for i, voltage_values in enumerate(voltages):
+                    self.network_current_to_path(self.path3, end_idx=i+1)
+                    if self.dynamic_resistances:
+                        self.resistance_to_path(self.path4, end_idx=i+1)
             
-    #         # --- Update network electrostatics ---
-    #         self.init_charge_vector(voltage_values=voltage_values)
-    #         self.init_potential_vector(voltage_values=voltage_values)
-
-    #         # --- Get all KMC model input arrays ---
-    #         inv_capacitance_matrix          = self.get_inv_capacitance_matrix()
-    #         charge_vector                   = self.get_charge_vector()
-    #         potential_vector                = self.get_potential_vector()
-    #         const_capacitance_values        = self.get_const_capacitance_values()
-    #         N_particles, N_electrodes       = self.get_particle_electrode_count()
-    #         adv_index_rows, adv_index_cols  = self.get_advanced_indices()
-    #         temperatures                    = self.get_const_temperatures(T=T_val)
-    #         resistances                     = self.get_tunneling_rate_prefactor()
-
-    #         # --- Instantiate (Numba-optimized) model ---
-    #         self.model = monte_carlo.MonteCarlo(
-    #             charge_vector, potential_vector, inv_capacitance_matrix, const_capacitance_values,
-    #             temperatures, resistances, adv_index_rows, adv_index_cols, N_electrodes, N_particles,
-    #             floating_electrodes, ac_time)
-
-    #         # --- Run KMC simulation (with or without dynamic resistances) ---
-    #         if self.dynamic_resistances:
-    #             eq_jumps = self.model.run_equilibration_steps_var_resistance(
-    #                 n_eq, 
-    #                 self.dynamic_resistances_info['slope'], 
-    #                 self.dynamic_resistances_info['shift'],
-    #                 self.dynamic_resistances_info['tau_0'],
-    #                 self.dynamic_resistances_info['R_max'],
-    #                 self.dynamic_resistances_info['R_min']
-    #             )
-                
-    #             # Production Run until Current at target electrode is less than error_th or max_jumps was passed
-    #             self.model.kmc_simulation_var_resistance(
-    #                 target_electrode, error_th, max_jumps, n_per_batch, 
-    #                 self.dynamic_resistances_info['slope'],
-    #                 self.dynamic_resistances_info['shift'],
-    #                 self.dynamic_resistances_info['tau_0'],
-    #                 self.dynamic_resistances_info['R_max'],
-    #                 self.dynamic_resistances_info['R_min'],
-    #                 kmc_counting, verbose
-    #             )
-    #         else:
-    #             if duration:
-    #                 # Check if total rate constant is less than 1e-10[1/s]: pass
-    #                 eq_jumps = self.model.run_equilibration_duration(n_eq)
-    #                 self.model.kmc_simulation_duration(
-    #                     target_electrode, error_th, max_jumps, n_per_batch,
-    #                     output_potential, kmc_counting, min_batches
-    #                 )
-    #             else:
-    #                 eq_jumps = self.model.run_equilibration_steps(n_eq)
-    #                 self.model.kmc_simulation(
-    #                     target_electrode, error_th, max_jumps, n_per_batch,
-    #                     output_potential, kmc_counting, min_batches, verbose
-    #                 )
-            
-    #         # --- Collect simulation results ---
-    #         self.observable_storage.append(self.model.get_observable())
-    #         self.observable_error_storage.append(self.model.get_observable_error())
-    #         self.state_storage.append(self.model.get_state())
-    #         self.potential_storage.append(self.model.get_potential())
-    #         self.network_current_storage.append(self.model.get_network_current())
-    #         self.eq_jump_storage.append(eq_jumps)
-    #         self.jump_storage.append(self.model.get_jump())
-    #         self.time_storage.append(self.model.get_time())
-
-    #         # --- Store extra data if verbose ---
-    #         if verbose:
-    #             self.observable_per_batch.append(self.model.get_target_observable_per_it())
-    #             self.time_per_batch.append(self.model.get_time_per_it())
-    #             self.potential_per_batch.append(self.model.get_potential_per_it())
-    #             # self.jump_per_batch.append(model.get_jump_per_batch())
-    #             if self.dynamic_resistances:
-    #                 self.resistance_per_batch.append(self.model.get_resistances_per_it())
-                
-    #         # --- Periodically save to disk ---
-    #         if (save_th is not None and ((i + 1) % save_th == 0)):
-    #             self.data_to_path(voltages[j:(i + 1),:], self.path1)
-    #             self.potential_to_path(self.path2)
-    #             self.network_current_to_path(self.path3)
-    #             self.clear_simulation_outputs()
-
-    #             j = i+1
-
-    def run_dynamic_voltages(self, voltages: np.ndarray, time_steps: np.ndarray, target_electrode: int, T_val: float = 0.1, eq_steps: int = 0, save: bool = False,
-                         stat_size: int = 10, init_charges: bool = None, verbose: bool = False):
+    def run_dynamic_voltages(self, voltages: np.ndarray, time_steps: np.ndarray, target_electrode: int,
+                             T_val: float = 0.01, save: bool = False,
+                             n_trajectories: int = 100, init_charges: bool = None, verbose: bool = False, **dyn_res_kwargs):
         """
         Run kinetic Monte Carlo simulation for time-dependent electrode voltages.
 
@@ -617,153 +378,153 @@ class Simulation:
         - The observable is either output current or (for floating electrodes) electrode potential.
         - The last time step in voltages is ignored for observable reporting.
         """
+        # --- Dimension Check & Auto-Padding ---
+        if len(time_steps) == len(voltages):
+            # Extrapolation
+            if len(time_steps) > 1:
+                dt = time_steps[-1] - time_steps[-2]
+                time_steps = np.append(time_steps, time_steps[-1] + dt)
+            else:
+                raise ValueError(f"For 'time_steps' and 'voltages' having the same length we need at least 2 steps.")
+            
+        elif len(time_steps) != len(voltages) + 1:
+            raise ValueError(
+                f"Dimension mismatch: 'time_steps' (len={len(time_steps)}) must have exactly"
+                f"one more element than 'voltages' (len={len(voltages)}) to define the intervals."
+            )
+
+        if self.dynamic_resistances:
+            I0_val = dyn_res_kwargs.get('I0', 7.5)
+            tau_0 = dyn_res_kwargs.get('tau_0', 1e-8)
+            R_max = dyn_res_kwargs.get('R_max', 25.0)
+            R_min = dyn_res_kwargs.get('R_min', 10.0)
 
         # Round voltages to 0.01 mV
-        voltages = np.round(voltages,5)
+        voltages = np.round(voltages, 5)
         
-        # Identify floating electrodes and detect if target electrode is floating
-        floating_electrodes = np.where(self.electrode_type == 'floating')[0]
-        const_electrodes    = np.where(self.electrode_type == 'constant')[0]
-        output_potential    = (self.electrode_type[target_electrode] == 'floating')
+        # --- Get strictly contiguous arrays for Numba ---
+        inv_capacitance_matrix = np.ascontiguousarray(self.electrostatic.get_inv_capacitance_matrix(), dtype=np.float64)
+        const_capacitance_values = np.ascontiguousarray(self.tunneling.get_const_capacitance_values(), dtype=np.float64)
+        N_particles, N_electrodes = self.topology.get_particle_electrode_count()
+        adv_index_rows, adv_index_cols = self.tunneling.get_advanced_indices()
+
+        adv_index_rows = np.ascontiguousarray(adv_index_rows, dtype=np.int64)
+        adv_index_cols = np.ascontiguousarray(adv_index_cols, dtype=np.int64)
+        floating_electrodes = np.ascontiguousarray(np.where(self.electrostatic.electrode_type == 'floating')[0], dtype=np.int64)
+        const_electrodes = np.ascontiguousarray(np.where(self.electrostatic.electrode_type == 'constant')[0], dtype=np.int64)
+
+        temperatures = np.ascontiguousarray(self.tunneling.get_const_temperatures(T=T_val), dtype=np.float64)
+        resistances = np.ascontiguousarray(self.tunneling.get_tunneling_rate_prefactor(), dtype=np.float64)
 
         # --- Initialize network for first time step ---
-        self.init_charge_vector(voltage_values=voltages[0])
-        self.init_potential_vector(voltage_values=voltages[0])
+        self.electrostatic.init_charge_vector(voltage_values=voltages[0])
+        self.electrostatic.init_potential_vector(voltage_values=voltages[0])
 
-        # --- Gather system parameters for KMC model ---
-        inv_capacitance_matrix          = self.get_inv_capacitance_matrix()
-        charge_vector                   = self.get_charge_vector()
-        potential_vector                = self.get_potential_vector()
-        const_capacitance_values        = self.get_const_capacitance_values()
-        N_particles, N_electrodes       = self.get_particle_electrode_count()
-        adv_index_rows, adv_index_cols  = self.get_advanced_indices()
-        temperatures                    = self.get_const_temperatures(T=T_val)
-        resistances                     = self.get_tunneling_rate_prefactor()
-
-        # Slowest Time Constant
-        tau_0 = self.get_slowest_linear_time_constant()
+        initial_charge_vector = np.ascontiguousarray(self.electrostatic.get_charge_vector(), dtype=np.float64)
+        potential_vector = np.ascontiguousarray(self.electrostatic.get_potential_vector(), dtype=np.float64)
         
         # --- Instantiate (Numba-optimized) model ---
-        self.model = monte_carlo.MonteCarlo(charge_vector, potential_vector, inv_capacitance_matrix, const_capacitance_values,
-                                temperatures, resistances, adv_index_rows, adv_index_cols, N_electrodes, N_particles, floating_electrodes, tau_0=tau_0)
+        self.model = MonteCarlo(
+            initial_charge_vector.copy(), potential_vector, inv_capacitance_matrix, const_capacitance_values,
+            temperatures, resistances, adv_index_rows, adv_index_cols, N_electrodes, N_particles, 
+            floating_electrodes
+        )
 
-        # --- Equilibration (unless using pre-initialized states) ---
-        if init_charges is None:
-            if self.dynamic_resistances:
-                eq_jumps = self.model.run_equilibration_steps_var_resistance(
-                        eq_steps, 
-                        self.dynamic_resistances_info['slope'], 
-                        self.dynamic_resistances_info['shift'],
-                        self.dynamic_resistances_info['tau_0'],
-                        self.dynamic_resistances_info['R_max'],
-                        self.dynamic_resistances_info['R_min']
-                    )
-            else:
-                eq_jumps = self.model.run_equilibration_steps(eq_steps)
-
-        # Initial time
+        # Initial time for the reference state
         self.model.time = time_steps[0]
         
         # Subtract charges induced by initial electrode voltages for charge-neutrality
-        offset                      = self.get_charge_vector_offset(voltage_values=voltages[0])
-        self.model.charge_vector    = self.model.charge_vector - offset
+        offset = self.electrostatic.get_charge_vector_offset(voltage_values=voltages[0])
+        self.model.charge_vector = self.model.charge_vector - offset
         
         # --- Ensemble initial states ---
         if init_charges is None:
-            self.q_eq   = np.tile(self.model.charge_vector.copy(), (stat_size,1))
+            self.q_eq = np.tile(self.model.charge_vector.copy(), (n_trajectories, 1))
         else:
-            eq_jumps    = 0
-            self.q_eq   = init_charges
+            self.q_eq = init_charges.copy()
 
         # --- Allocate result arrays ---
-        n_time      = voltages.shape[0]
+        n_time = voltages.shape[0]
         n_junctions = len(self.model.adv_index_rows)
-        self.observable_storage         = np.zeros(n_time)
-        self.state_storage              = np.zeros(shape=(n_time, self.model.N_particles))
-        self.potential_storage          = np.zeros(shape=(n_time, self.model.N_particles+self.model.N_electrodes))
-        self.network_current_storage    = np.zeros(shape=(n_time, n_junctions))
-        self.jump_storage               = np.zeros(n_time)
-
-        # Store equilibrated charge distribution
-        observable = np.zeros(shape=(stat_size, n_time))
         
+        self.observable_storage = np.zeros(n_time)
+        self.jump_storage = np.zeros(n_time)
+        self.potential_storage = np.zeros(shape=(n_time, self.model.N_particles + self.model.N_electrodes))
+
+        if verbose:
+            self.state_storage = np.zeros(shape=(n_time, self.model.N_particles))
+            self.network_current_storage = np.zeros(shape=(n_time, n_junctions))
+            if self.dynamic_resistances:
+                self.resistance_storage = np.zeros(shape=(n_time, n_junctions))
+
+        # Store observable for statistical errors
+        observable = np.zeros(shape=(n_trajectories, n_time))
+
         # --- Main simulation loop: ensemble average ---
-        for s in range(stat_size):
+        for s in range(n_trajectories):
             self.model.charge_vector = self.q_eq[s,:].copy()
+
+            if self.dynamic_resistances:
+                self.model.I_tilde = np.zeros(len(adv_index_rows))
+                               
             for i, voltage_values in enumerate(voltages):
                 # Apply charging state from electrode voltage
-                offset                      =  self.get_charge_vector_offset(voltage_values=voltage_values)
-                self.model.charge_vector    += offset
+                offset = self.electrostatic.get_charge_vector_offset(voltage_values=voltage_values)
+                self.model.charge_vector += offset
                 
                 # Define given time and time target
                 self.model.time = time_steps[i]
-                time_target     = time_steps[i+1]
+                time_target = time_steps[i+1]
 
-                # Update constant electrode potentials
+                # Update constant electrode potentials in the Numba model
                 self.model.potential_vector[const_electrodes] = voltage_values[const_electrodes]
                                 
                 if self.dynamic_resistances:
-                    self.model.kmc_time_simulation_var_resistance(
-                        target_electrode, time_target,
-                        self.dynamic_resistances_info['slope'], 
-                        self.dynamic_resistances_info['shift'],
-                        self.dynamic_resistances_info['tau_0'],
-                        self.dynamic_resistances_info['R_max'],
-                        self.dynamic_resistances_info['R_min']
-                    )
+                    self.model.kmc_time_simulation_trajectory_var_resistance(
+                        target_electrode, time_target, I0_val, tau_0, R_max, R_min)
                 else:
-                    self.model.kmc_time_simulation(target_electrode, time_target, output_potential)
-                    target_observable_mean  = self.model.get_observable()
-                    total_jumps             = self.model.get_jump()
+                    self.model.kmc_time_simulation_trajectory(target_electrode, time_target)
+
+                # Fetch results directly from public attributes (no getters)
+                target_observable_mean = self.model.target_observable_mean
+                total_jumps = self.model.total_jumps
                 
                 # Add observables to outputs
-                observable[s,i]                     =  target_observable_mean
-                self.state_storage[i,:]             += self.model.get_state() / stat_size
-                self.potential_storage[i,:]         += self.model.get_potential() / stat_size
-                self.network_current_storage[i,:]   += self.model.get_network_current() / stat_size
-                self.jump_storage[i]                += total_jumps / stat_size
+                observable[s, i] = target_observable_mean
+                self.jump_storage[i] += total_jumps / n_trajectories
+                self.potential_storage[i, :] += self.model.potential_mean / n_trajectories
 
-                # Remove voltage offset for next step
+                if verbose:
+                    self.state_storage[i, :] += self.model.charge_mean / n_trajectories
+                    self.network_current_storage[i, :] += self.model.network_currents / n_trajectories
+                    if self.dynamic_resistances:
+                        self.resistance_storage[i, :] += self.model.resistances / n_trajectories
+                
+                # Remove voltage offset for next step (to avoid double-counting)
                 self.model.charge_vector -= offset
 
             # Store last charge vector for each run
-            self.q_eq[s,:] = self.model.charge_vector.copy()
+            self.q_eq[s, :] = self.model.charge_vector.copy()
 
         # --- Statistics and final result arrays ---
-        self.observable_storage         = np.mean(observable, axis=0)
-        self.observable_error_storage   = 1.96*np.std(observable, axis=0, ddof=1) / np.sqrt(stat_size)
-        self.eq_jump_storage            = np.repeat(eq_jumps, len(self.observable_storage))
+        self.observable_storage = np.mean(observable, axis=0)
+        self.observable_error_storage = 1.96 * np.std(observable, axis=0, ddof=1) / np.sqrt(n_trajectories)
 
         # Prepare output voltage arrays for saving
-        V_safe_vals                         = np.zeros(shape=(self.potential_storage.shape[0],self.N_electrodes+1))
-        V_safe_vals[:,floating_electrodes]  = self.potential_storage[:,floating_electrodes]
-        V_safe_vals[:,const_electrodes]     = voltages[:, const_electrodes]
-        V_safe_vals[:,-1]                   = voltages[:, -1]
-
         if save:
+            V_safe_vals = np.zeros(shape=(n_time, self.topology.N_electrodes + 1))
+            if verbose and floating_electrodes.size > 0:
+                V_safe_vals[:, floating_electrodes] = self.potential_storage[:, floating_electrodes]
+            elif floating_electrodes.size > 0:
+                print("Warning: Cannot save floating potentials if verbose=False.")
+            V_safe_vals[:, const_electrodes] = voltages[:, const_electrodes]
+            V_safe_vals[:, -1] = voltages[:, -1]
+
             self.data_to_path(V_safe_vals, self.path1)
             self.potential_to_path(self.path2)
-            self.network_current_to_path(self.path3)
-        
-    def clear_simulation_outputs(self) -> None:
-        """Clears simulation outputs before running a new set of voltages."""
-        
-        # Default Data
-        self.observable_storage         = []
-        self.observable_error_storage   = []
-        self.state_storage              = []
-        self.potential_storage          = []
-        self.network_current_storage    = []
-        self.eq_jump_storage            = []
-        self.jump_storage               = []
-        self.time_storage               = []
-        
-        # Verbose Data
-        self.observable_per_batch   = []
-        # self.jump_per_batch         = []
-        self.time_per_batch         = []
-        self.potential_per_batch    = []
-        self.resistance_per_batch   = []
+            
+            if verbose:
+                self.network_current_to_path(self.path3)
 
     def get_observable_storage(self) -> np.ndarray:
         """
@@ -772,7 +533,7 @@ class Simulation:
         np.ndarray
             Array of main observable values for each simulation condition or time point.
         """
-        return np.array(self.observable_storage)
+        return self.observable_storage.copy()
     
     def get_observable_error_storage(self) -> np.ndarray:
         """
@@ -781,7 +542,7 @@ class Simulation:
         np.ndarray
             Array of standard errors (or 95% CI) for each observable.
         """
-        return np.array(self.observable_error_storage)
+        return self.observable_error_storage.copy()
     
     def get_state_storage(self) -> np.ndarray:
         """
@@ -790,7 +551,7 @@ class Simulation:
         np.ndarray
             Array of averaged nanoparticle charge states per condition or time point.
         """
-        return np.array(self.state_storage)
+        return self.state_storage.copy()
     
     def get_potential_storage(self) -> np.ndarray:
         """
@@ -799,7 +560,7 @@ class Simulation:
         np.ndarray
             Array of averaged potentials (for all particles and electrodes) per condition or time point.
         """
-        return np.array(self.potential_storage)
+        return self.potential_storage.copy()
     
     def get_network_current_storage(self) -> dict:
         """
@@ -807,11 +568,37 @@ class Simulation:
         -------
         dict
             Dictionary mapping each (row, col) pair (junction) to its average network current.
-            Keys are (origin, target) tuples, values are floats (current).
+            Keys are (origin, target) tuples, values are 1D arrays (current over time/voltages).
         """
+        # Werte sicher über Komposition aus dem Tunneling-Modul abrufen
+        adv_index_rows, adv_index_cols = self.tunneling.get_advanced_indices()
+        
         return {
-            (self.adv_index_rows[i], self.adv_index_cols[i]) : np.array(self.network_current_storage)[:,i].copy()
+            (adv_index_rows[i], adv_index_cols[i]) : np.array(self.network_current_storage)[:, i].copy()
             for i in range(len(self.network_current_storage[0]))
+        }
+    
+    def get_resistance_storage(self) -> dict:
+        """
+        Returns
+        -------
+        dict
+            Dictionary mapping each (row, col) pair (junction) to its average dynamic resistance.
+            Keys are (origin, target) tuples, values are 1D arrays (resistance over time/voltages).
+            
+        Raises
+        ------
+        RuntimeError
+            If dynamic resistances were not tracked (e.g., dynamic=False or verbose=False).
+        """
+        if not hasattr(self, 'resistance_storage') or self.resistance_storage is None or len(self.resistance_storage) == 0:
+            raise RuntimeError("Resistance storage is empty. Ensure dynamic_resistances=True and verbose=True.")
+            
+        adv_index_rows, adv_index_cols = self.tunneling.get_advanced_indices()
+        
+        return {
+            (adv_index_rows[i], adv_index_cols[i]) : np.array(self.resistance_storage)[:, i].copy()
+            for i in range(len(self.resistance_storage[0]))
         }
     
     def get_eq_jump_storage(self) -> np.ndarray:
@@ -821,7 +608,7 @@ class Simulation:
         np.ndarray
             Array of number of jumps performed during equilibration for each simulation point.
         """
-        return np.array(self.eq_jump_storage)
+        return self.eq_jump_storage.copy()
     
     def get_jump_storage(self) -> np.ndarray:
         """
@@ -830,7 +617,7 @@ class Simulation:
         np.ndarray
             Array of total number of KMC jumps per simulation point.
         """
-        return np.array(self.jump_storage)
+        return self.jump_storage.copy()
     
     def get_time_storage(self) -> np.ndarray:
         """
@@ -839,52 +626,7 @@ class Simulation:
         np.ndarray
             Array of simulation times for each voltage point or condition.
         """
-        return np.array(self.time_storage)
-    
-    def get_observable_per_batch(self) -> np.ndarray:
-        """
-        Returns
-        -------
-        np.ndarray
-            Array of observable values for each batch (if verbose simulation).
-        """
-        return np.array(self.observable_per_batch)
-    
-    # def get_jump_per_batch(self) -> np.ndarray:
-    #     """
-    #     Returns
-    #     -------
-    #     np.ndarray
-    #         Array of jump counts for each batch and each possible event (if verbose).
-    #     """
-    #     return np.array(self.jump_per_batch)
-
-    def get_time_per_batch(self) -> np.ndarray:
-        """
-        Returns
-        -------
-        np.ndarray
-            Array of simulation time per batch (if verbose simulation).
-        """
-        return np.array(self.time_per_batch)
-    
-    def get_potential_per_batch(self) -> np.ndarray:
-        """
-        Returns
-        -------
-        np.ndarray
-            Array of averaged potential landscapes per batch (if verbose simulation).
-        """
-        return np.array(self.potential_per_batch)
-    
-    def get_resistance_per_batch(self) -> dict:
-        """
-        Returns
-        -------
-        dict
-            Dictionary mapping (origin, target) pairs to average resistance values per batch.
-        """
-        return {(self.adv_index_rows[i], self.adv_index_cols[i]) : val for i, val in enumerate(self.resistance_per_batch)}
+        return self.time_storage.copy()
     
     def data_to_path(self, voltages : np.ndarray, path : str) -> None:
         """
@@ -903,28 +645,26 @@ class Simulation:
         Eq_Jumps (equilibration steps), Jumps (total KMC steps), Observable (main value), and Error (statistical error).
         Appends to file if already exists, otherwise creates a new file with headers.
         """
-        # Get storage arrays and ensure shape is correct for stacking
-        val_a   = self.get_eq_jump_storage().reshape(-1, 1)
-        val_b   = self.get_jump_storage().reshape(-1, 1)
-        val_c   = self.get_observable_storage().reshape(-1, 1)
-        val_d   = self.get_observable_error_storage().reshape(-1, 1)
+        end_idx = voltages.shape[0]
 
-        data    = np.hstack([voltages, val_a, val_b, val_c, val_d])
+        # Only get calculated slices
+        val_a = self.get_eq_jump_storage()[:end_idx].reshape(-1, 1)
+        val_b = self.get_jump_storage()[:end_idx].reshape(-1, 1)
+        val_c = self.get_observable_storage()[:end_idx].reshape(-1, 1)
+        val_d = self.get_observable_error_storage()[:end_idx].reshape(-1, 1)
+        data = np.hstack([voltages, val_a, val_b, val_c, val_d])
 
         # Use all electrode columns
-        columns = [f'E{i}' for i in range(voltages.shape[1]-1)]
+        columns = [f'E{i}' for i in range(voltages.shape[1] - 1)]
         columns = np.array(columns + ['G', 'Eq_Jumps', 'Jumps', 'Observable', 'Error'])
 
-        df          = pd.DataFrame(data)
-        df.columns  = columns
+        df = pd.DataFrame(data)
+        df.columns = columns
 
-        # Save or append
-        if (os.path.isfile(path)):
-            df.to_csv(path, mode='a', header=False, index=False)
-        else:
-            df.to_csv(path, header=True, index=False)
+        # Overwrite file
+        df.to_csv(path, index=False)
 
-    def potential_to_path(self, path: str) -> None:
+    def potential_to_path(self, path: str, end_idx: int = None) -> None:
         """
         Save the potential landscape (microstates) for each voltage point to a CSV file.
 
@@ -938,14 +678,17 @@ class Simulation:
         Each row corresponds to the full potential vector (all electrodes + particles) for a voltage set.
         Appends to file if it already exists; otherwise, creates a new file with headers.
         """
-        microstates_df = pd.DataFrame(self.potential_storage)
+        data_to_save = self.potential_storage[:end_idx] if end_idx is not None else self.potential_storage
+        
+        # Parquet verlangt String-Spaltennamen (Pandas Default-Integer 0, 1... sind nicht erlaubt)
+        col_names = [str(i) for i in range(data_to_save.shape[1])]
+        
+        microstates_df = pd.DataFrame(data_to_save, columns=col_names)
+        
+        # index=False verhindert das Speichern der unbenannten Pandas-Index-Spalte
+        microstates_df.to_parquet(path, engine='pyarrow', index=False)
 
-        if (os.path.isfile(path)):
-            microstates_df.to_csv(path, mode='a', header=False, index=False)
-        else:
-            microstates_df.to_csv(path, header=True, index=False)
-
-    def network_current_to_path(self, path : str) -> None:
+    def network_current_to_path(self, path : str, end_idx: int = None) -> None:
         """
         Save the average tunneling rate (network currents) for each voltage point to a CSV file.
 
@@ -960,11 +703,27 @@ class Simulation:
         - Each row corresponds to a voltage set in the simulation.
         - Appends to file if it already exists; otherwise, creates a new file with headers.
         """
-        avg_j_cols                  = [(self.adv_index_rows[i],self.adv_index_cols[i]) for i in range(len(self.adv_index_rows))]
-        average_jumps_df            = pd.DataFrame(self.network_current_storage)
-        average_jumps_df.columns    = avg_j_cols
+        adv_index_rows, adv_index_cols = self.tunneling.get_advanced_indices()
+        
+        # Tupel (row, col) in lesbare Strings "row_col" konvertieren
+        avg_j_cols = [f"{adv_index_rows[i]}_{adv_index_cols[i]}" for i in range(len(adv_index_rows))]
+        
+        data_to_save = self.network_current_storage[:end_idx] if end_idx is not None else self.network_current_storage
+        average_jumps_df = pd.DataFrame(data_to_save, columns=avg_j_cols)
 
-        if (os.path.isfile(path)):
-            average_jumps_df.to_csv(path, mode='a', header=False, index=False)
-        else:
-            average_jumps_df.to_csv(path, header=True, index=False)
+        average_jumps_df.to_parquet(path, engine='pyarrow', index=False)
+
+    def resistance_to_path(self, path: str, end_idx: int = None) -> None:
+        """
+        Save the average dynamic resistances of the memristive junctions to a Parquet file.
+        """
+        if not hasattr(self, 'resistance_storage') or self.resistance_storage is None:
+            return 
+                        
+        adv_index_rows, adv_index_cols = self.tunneling.get_advanced_indices()
+        avg_r_cols = [f"{adv_index_rows[i]}_{adv_index_cols[i]}" for i in range(len(adv_index_rows))]
+        
+        data_to_save = self.resistance_storage[:end_idx] if end_idx is not None else self.resistance_storage
+        resistance_df = pd.DataFrame(data_to_save, columns=avg_r_cols)
+
+        resistance_df.to_parquet(path, engine='pyarrow', index=False)
