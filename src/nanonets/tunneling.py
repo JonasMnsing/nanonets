@@ -1,7 +1,7 @@
 import numpy as np
 import networkx as nx
 from nanonets.electrostatic import NanoparticleElectrostatic
-from typing import Tuple, List, Optional
+from typing import Tuple, List
 from scipy.linalg import eig
 
 class NanoparticleTunneling:
