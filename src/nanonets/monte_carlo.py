@@ -1,5 +1,4 @@
 import numpy as np
-from typing import Tuple
 from numba.experimental import jitclass
 from numba import int64, float64, boolean
 
@@ -16,6 +15,7 @@ spec = [
     ('resistances', float64[::1]),                # Resistances per tunneling event [MΩ]
     ('adv_index_rows', int64[::1]),               # Origin indices (i) for events i→j
     ('adv_index_cols', int64[::1]),               # Target indices (j) for events i→j
+    ('reverse_jump_indices', int64[::1]),         # Jump -> Reverse Jump
     ('N_electrodes', int64),                      # Number of electrodes
     ('N_particles', int64),                       # Number of nanoparticles
     ('ele_charge', float64),                      # Elementary charge [aC]
@@ -114,7 +114,7 @@ class MonteCarlo:
     """
 
     def __init__(self, charge_vector: np.ndarray, potential_vector: np.ndarray, inv_capacitance_matrix: np.ndarray, const_capacitance_values: np.ndarray,
-                 temperatures: np.ndarray, resistances: np.ndarray, adv_index_rows: np.ndarray, adv_index_cols: np.ndarray, N_electrodes: int,
+                 temperatures: np.ndarray, resistances: np.ndarray, adv_index_rows: np.ndarray, adv_index_cols: np.ndarray, reverse_jump_indices:np.ndarray, N_electrodes: int,
                  N_particles: int, floating_electrodes: np.ndarray) -> None:
         """
         Initialize the KMC simulation state and all model parameters.
@@ -158,6 +158,7 @@ class MonteCarlo:
         self.resistances                    = resistances
         self.adv_index_rows                 = adv_index_rows
         self.adv_index_cols                 = adv_index_cols
+        self.reverse_jump_indices           = reverse_jump_indices
         self.N_electrodes                   = N_electrodes
         self.N_particles                    = N_particles
         self.N_rates                        = len(self.adv_index_rows)
@@ -661,6 +662,8 @@ class MonteCarlo:
             
             # Add count to the specific junction where the electron just tunneled
             self.I_tilde[self.jump] += 1.0
+            rev_jump = self.reverse_jump_indices[self.jump]
+            self.I_tilde[rev_jump] += 1.0
 
         return n_jumps
 
@@ -724,6 +727,8 @@ class MonteCarlo:
                 self.I_tilde[i] *= decay
             
             self.I_tilde[self.jump] += 1.0
+            rev_jump = self.reverse_jump_indices[self.jump]
+            self.I_tilde[rev_jump] += 1.0
 
             # --- 5. Accumalte Observable ---
             for i in range(self.N_particles):
@@ -845,6 +850,8 @@ class MonteCarlo:
             # A "+1" for a junction, if an event actually was in the time frame!
             if valid_jump:
                 self.I_tilde[self.jump] += 1.0
+                rev_jump = self.reverse_jump_indices[self.jump]
+                self.I_tilde[rev_jump] += 1.0
 
             # --- 5. Accumalte olbservable ---
             for i in range(self.N_particles):

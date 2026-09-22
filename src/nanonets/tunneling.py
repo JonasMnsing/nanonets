@@ -2,7 +2,6 @@ import numpy as np
 import networkx as nx
 from nanonets.electrostatic import NanoparticleElectrostatic
 from typing import Tuple, List
-from scipy.linalg import eig
 
 class NanoparticleTunneling:
     """
@@ -561,6 +560,26 @@ class NanoparticleTunneling:
         self.transfer_coeffs            = -(Y_out_k - indirect_coupling)
         self.transfer_coeffs[rel_out]   = 0.0
 
+    def get_reverse_jump_indices(self) -> np.ndarray:
+        """
+        Returns an array mapping each tunneling junction to its physical reverse junction.
+        Useful for symmetric physical processes like memristive switching.
+        """
+        if getattr(self, "reverse_jump_indices", None) is None:
+            adv_rows, adv_cols = self.get_advanced_indices()
+            n_junctions = len(adv_rows)
+            rev_indices = np.zeros(n_junctions, dtype=np.int64)
+            
+            for i in range(n_junctions):
+                np1 = adv_rows[i]
+                np2 = adv_cols[i]
+                rev_idx = np.where((adv_rows == np2) & (adv_cols == np1))[0][0]
+                rev_indices[i] = rev_idx
+                
+            self.reverse_jump_indices = rev_indices
+            
+        return self.reverse_jump_indices
+
     def get_const_capacitance_values(self) -> np.ndarray:
         """
         Returns
@@ -704,7 +723,10 @@ class NanoparticleTunneling:
         n_elec = self.electro.topo.N_electrodes
 
         # Smallest Eigenvalue
-        eig_v, _ = eig(g_m[:-n_elec,:-n_elec], cap_m)
+        A = g_m[:-n_elec, :-n_elec]
+        B = cap_m
+        matrix_product = np.linalg.solve(B, A)
+        eig_v, _ = np.linalg.eig(matrix_product)
         eig_real = np.real(eig_v)
         eig_valid = eig_real[eig_real > lam_th]
         lambda_min = np.min(eig_valid)

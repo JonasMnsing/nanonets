@@ -12,18 +12,24 @@ license = { text = "MIT License" }
 authors = [
   { name = "Jonas", email = "jonasmensing@posteo.de" },
 ]
+# scipy ist hier jetzt komplett raus!
 dependencies = [
     "numpy>=2.0.0",
     "numba>=0.67.0",
     "networkx>=2.8.0",
     "pandas>=2.0.0",
-    "pyarrow>=10.0.0",
-    "scipy>=1.9.0"
+    "pyarrow>=10.0.0"
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0"
+]
+# Das "all" Paket für Nutzer, die Jupyter und die Utils nutzen wollen
+all = [
+    "jupyter>=1.0.0", 
+    "matplotlib>=3.5.0", 
+    "scipy>=1.9.0"
 ]
 
 [tool.pytest.ini_options]

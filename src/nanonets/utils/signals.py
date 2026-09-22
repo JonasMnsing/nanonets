@@ -161,6 +161,34 @@ def logic_gate_sample(U_e : Union[float, List[float]], input_pos : List[int], N_
 
     return sample
 
+def get_time_setup_from_frequency(f0_hz: float, n_periods: int, samples_per_period: int = 40) -> Tuple[int, float]:
+    """
+    Calculates the required number of samples and time step to properly resolve a given base frequency.
+
+    Parameters
+    ----------
+    f0_hz : float
+        The base frequency of the signal in Hz.
+    n_periods : int
+        The total number of periods to simulate.
+    samples_per_period : int, optional
+        Number of time steps per single period. Higher values resolve higher harmonics.
+        By default 40.
+
+    Returns
+    -------
+    Tuple[int, float]
+        N_samples (int) and time_step (float)
+    """
+    if f0_hz <= 0:
+        raise ValueError("Frequency f0_hz must be greater than zero.")
+        
+    dt = 1.0 / (samples_per_period * f0_hz)
+    t_sim = n_periods / f0_hz
+    n_samples = int(np.round(t_sim / dt))  # np.round ist sicherer als ceil bei Float-Ungenauigkeiten
+    
+    return n_samples, dt
+
 def sinusoidal_voltages(N_samples : int, topology_parameter : dict, amplitudes : Union[float, List[float]], frequencies : Union[float, List[float]] = 0.0,
                         phase : Union[float, List[float]]=0.0, offset : Union[float, List[float]] = 0.0, time_step : float = 1e-10)->Tuple[np.array,np.array]:
     """Return voltage array containing sinusoidal signals of given frequencies and amplitudes
@@ -221,6 +249,8 @@ def generate_band_limited_noise(duration_s: float, max_amplitude: float = 20e-3,
         Total length of the simulation time series (seconds).
     bandwidth_hz: float
         The maximum frequency (Hz) to represent in the signal. (Ensures adequate sampling rate for the physical signal).
+    max_amplitude: float
+        The hard limit for the voltage amplitude.
     dt_s: float, optional
         The discrete time step (seconds). Must be small enough to satisfy Nyquist. Default: 1e-11
     
@@ -229,18 +259,17 @@ def generate_band_limited_noise(duration_s: float, max_amplitude: float = 20e-3,
     """
 
     # 1. Setup Time
-    n_samples   = int(duration_s / dt_s)
+    n_samples = int(duration_s / dt_s)
     time_series = np.linspace(0, duration_s, n_samples, endpoint=False)
 
-    # 2. Generate Raw White Noise (Beta=0)
-    raw_noise = cn.powerlaw_psd_gaussian(0, n_samples)
+    # 2. Generate Raw White Noise (Standard Normal Distribution)
+    raw_noise = np.random.normal(loc=0.0, scale=1.0, size=n_samples)
 
-    # 3. Apply Low-Pass Filter (To enforce 4.35 GHz limit)
+    # 3. Apply Low-Pass Filter (To enforce bandwidth limit)
     # Nyquist frequency
     nyquist = 0.5 / dt_s
 
     # Design 4th order Butterworth filter
-    # normalized_cutoff = cutoff_hz / nyquist
     sos = signal.butter(4, bandwidth_hz / nyquist, btype='low', output='sos')
 
     # Apply filter
