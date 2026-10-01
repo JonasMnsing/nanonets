@@ -512,6 +512,12 @@ class Simulation:
         self.observable_storage = np.mean(observable, axis=0)
         self.observable_error_storage = 1.96 * np.std(observable, axis=0, ddof=1) / np.sqrt(n_trajectories)
 
+        # Displacement Currents
+        C_out_vec = self.electrostatic.get_electrode_capacitance_matrix()[target_electrode, :]
+        dt = time_steps[1] - time_steps[0]
+        d_phi_dt = np.gradient(self.potential_storage[:, N_electrodes:], dt, axis=1)
+        self.displacement_storage = d_phi_dt @ C_out_vec
+
         # Prepare output voltage arrays for saving
         if save:
             V_safe_vals = np.zeros(shape=(n_time, self.topology.N_electrodes + 1))
@@ -545,6 +551,15 @@ class Simulation:
             Array of standard errors (or 95% CI) for each observable.
         """
         return self.observable_error_storage.copy()
+
+    def get_observable_displacement_storage(self) -> np.ndarray:
+        """
+        Returns
+        -------
+        np.ndarray
+            Array of main observable displacement currents for each time point.
+        """
+        return self.displacement_storage.copy()
     
     def get_state_storage(self) -> np.ndarray:
         """
