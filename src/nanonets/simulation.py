@@ -123,7 +123,6 @@ class Simulation:
             res_info = {"mean_R": 25.0, "std_R": 0.0, "dynamic": False}
 
         self.dynamic_resistances = res_info.get('dynamic', False)
-        self.dynamic_resistances_info = res_info
 
         # --- 2. TOPOLOGY COMPOSITION ---
         # Init Topology
@@ -400,9 +399,6 @@ class Simulation:
             R_max = dyn_res_kwargs.get('R_max', 25.0)
             R_min = dyn_res_kwargs.get('R_min', 10.0)
 
-        # Round voltages to 0.01 mV
-        voltages = np.round(voltages, 5)
-        
         # --- Get strictly contiguous arrays for Numba ---
         inv_capacitance_matrix = np.ascontiguousarray(self.electrostatic.get_inv_capacitance_matrix(), dtype=np.float64)
         const_capacitance_values = np.ascontiguousarray(self.tunneling.get_const_capacitance_values(), dtype=np.float64)
@@ -431,6 +427,8 @@ class Simulation:
             temperatures, resistances, adv_index_rows, adv_index_cols, reverse_jump_indices, N_electrodes, N_particles, 
             floating_electrodes
         )
+
+        _ = self.model.run_equilibration_steps(0)
 
         # Initial time for the reference state
         self.model.time = time_steps[0]
@@ -515,7 +513,7 @@ class Simulation:
         # Displacement Currents
         C_out_vec = self.electrostatic.get_electrode_capacitance_matrix()[target_electrode, :]
         dt = time_steps[1] - time_steps[0]
-        d_phi_dt = np.gradient(self.potential_storage[:, N_electrodes:], dt, axis=1)
+        d_phi_dt = np.gradient(self.potential_storage[:, N_electrodes:], dt, axis=0)
         self.displacement_storage = d_phi_dt @ C_out_vec
 
         # Prepare output voltage arrays for saving
