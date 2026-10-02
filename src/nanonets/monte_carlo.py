@@ -461,15 +461,13 @@ class MonteCarlo:
             self.target_observable_mean = (target_value / actual_sim_time) * self.ele_charge
         else:
             self.target_observable_mean = 0.0
-            
+
     def kmc_time_simulation_trajectory(self, target_electrode: int, time_target: float) -> None:
         """
         Run kinetic Monte Carlo simulation strictly up to a target simulation time.
         """
-        # Calculate initial potential landscape
         self.calc_potentials()
         
-        # Safe in-place zeroing
         self.charge_mean.fill(0.0)
         self.potential_mean.fill(0.0)
         self.network_currents.fill(0.0)
@@ -482,6 +480,11 @@ class MonteCarlo:
 
         inner_time = self.time
 
+        # --- NEU: Pre-Compute der Target-Indizes (außerhalb der Schleife!) ---
+        # np.where liefert alle Indizes zurück, bei denen die Elektrode Ziel oder Quelle ist.
+        in_indices = np.where(self.adv_index_cols == target_electrode)[0]
+        out_indices = np.where(self.adv_index_rows == target_electrode)[0]
+
         # --- Main simulation loop ---
         while self.time < time_target:
             last_time = self.time
@@ -489,20 +492,19 @@ class MonteCarlo:
             # 1. Calculate Rate BEFORE jump
             self.calc_tunnel_rates()
 
-            # --- NEU: Wir lesen den Strom exakt in diesem Zustand aus, BEVOR er sich ändert! ---
+            # --- OPTIMIERT: Direkter Zugriff nur auf die relevanten Kanten ---
             current_rate_sum = 0.0
-            for i in range(len(self.adv_index_rows)):
-                if self.adv_index_cols[i] == target_electrode:
-                    current_rate_sum += self.tunnel_rates[i]
-                elif self.adv_index_rows[i] == target_electrode:
-                    current_rate_sum -= self.tunnel_rates[i]
+            for i in in_indices:
+                current_rate_sum += self.tunnel_rates[i]
+            for i in out_indices:
+                current_rate_sum -= self.tunnel_rates[i]
 
-            # Um völlig physikalisch korrekt zu sein, merken wir uns auch Ladung/Potential vor dem Jump
+            # Zustände vor dem Sprung cachen
             current_charge = self.charge_vector.copy()
             current_potential = self.potential_vector.copy()
             current_network_rates = self.tunnel_rates.copy()
 
-            # 2. Get random numbers and select event (This modifies the internal state!)
+            # 2. Get random numbers and select event
             random_number1 = np.random.rand()
             random_number2 = np.random.rand()
             self.select_event(random_number1, random_number2)
@@ -531,7 +533,6 @@ class MonteCarlo:
             self.update_floating_electrode(idx_np_target)
 
             # --- 4. Accumulation of observables ---
-            # WICHTIG: Wir multiplizieren das dt mit den Zuständen VOR dem Jump!
             target_value += current_rate_sum * dt
             
             self.charge_mean += current_charge * dt
@@ -552,122 +553,6 @@ class MonteCarlo:
             self.network_currents = self.ele_charge * self.network_currents / total_sim_time
         else:
             self.target_observable_mean = 0.0
-
-    # def kmc_time_simulation_trajectory(self, target_electrode: int, time_target: float) -> None:
-    #     """
-    #     Run kinetic Monte Carlo simulation strictly up to a target simulation time.
-
-    #     Parameters
-    #     ----------
-    #     target_electrode : int
-    #         Electrode index for which to estimate observable (potential or current).
-    #     time_target : float
-    #         Target simulation time.
-    #     """
-
-    #     numba_target = self.N_particles + target_electrode
-
-    #     # Calculate initial potential landscape
-    #     self.calc_potentials()
-        
-    #     # Zero out storage arrays in-place (no allocation overhead!)
-    #     for i in range(self.N_particles):
-    #         self.charge_mean[i] = 0.0
-    #     for i in range(self.N_particles + self.N_electrodes):
-    #         self.potential_mean[i] = 0.0
-    #     for i in range(self.N_rates):
-    #         self.network_currents[i] = 0.0
-            
-    #     self.total_jumps = 0
-    #     target_value = 0.0  
-
-    #     # Indices for floating electrode updates
-    #     idx_np_target = self.adv_index_cols[self.floating_electrodes]
-    #     self.update_floating_electrode(idx_np_target)
-
-    #     # Track simulation times 
-    #     inner_time = self.time
-
-    #     # --- Main simulation loop ---
-    #     while self.time < time_target:
-    #         last_time = self.time
-
-    #         # 1. Calculate Rate
-    #         self.calc_tunnel_rates()
-
-    #         # 2. Get random nnumbers and select event
-    #         random_number1 = np.random.rand()
-    #         random_number2 = np.random.rand()
-    #         self.select_event(random_number1, random_number2)
-
-    #         # 3. KMC exists and time-management
-    #         is_done = False
-            
-    #         if self.jump == -1:
-    #             # Case A: System is blocked (no events possible)
-    #             dt = time_target - last_time
-    #             self.time = time_target  # Advance clock
-    #             is_done = True
-                
-    #         elif self.time >= time_target:
-    #             # Case B: Time slice overshoot
-    #             np1 = self.adv_index_rows[self.jump]
-    #             np2 = self.adv_index_cols[self.jump]
-    #             self.neglect_last_event(np1, np2)
-                
-    #             dt = time_target - last_time
-    #             self.time = time_target  # WICHTIG: KMC Uhr exakt auf Zielzeit snappen
-    #             is_done = True
-                
-    #         else:
-    #             # Case C: KMC step
-    #             dt = self.time - last_time
-    #             self.total_jumps += 1
-
-    #         self.update_floating_electrode(idx_np_target)
-
-    #         # --- 4. Accumulation of observables ---
-            
-    #         # Charges
-    #         for i in range(self.N_particles):
-    #             self.charge_mean[i] += self.charge_vector[i] * dt
-                
-    #         # Potentials
-    #         for i in range(self.N_particles + self.N_electrodes):
-    #             self.potential_mean[i] += self.potential_vector[i] * dt
-                
-    #         # Rates / Currents
-    #         for i in range(self.N_rates):
-    #             rate_dt = self.tunnel_rates[i] * dt
-    #             self.network_currents[i] += rate_dt
-                
-    #             # Count Current for target electrode
-    #             if self.adv_index_cols[i] == numba_target:
-    #                 target_value += rate_dt
-    #             elif self.adv_index_rows[i] == numba_target:
-    #                 target_value -= rate_dt
-
-    #         # Exit
-    #         if is_done:
-    #             break
-                
-    #     # --- Final averages ---
-    #     total_sim_time = time_target - inner_time
-        
-    #     if total_sim_time > 0:
-            
-    #         self.target_observable_mean = self.ele_charge * target_value / total_sim_time
-                
-    #         for i in range(self.N_particles):
-    #             self.charge_mean[i] /= total_sim_time
-                
-    #         for i in range(self.N_particles + self.N_electrodes):
-    #             self.potential_mean[i] /= total_sim_time
-                
-    #         for i in range(self.N_rates):
-    #             self.network_currents[i] = self.ele_charge * self.network_currents[i] / total_sim_time
-    #     else:
-    #         self.target_observable_mean = 0.0
 
     ### VARIABLE RESISTANCES
     ########################
