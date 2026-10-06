@@ -764,13 +764,10 @@ class MonteCarlo:
         # Calculate initial potential landscape
         self.calc_potentials()
         
-        # Zero out storage arrays in-place (no allocation overhead!)
-        for i in range(self.N_particles):
-            self.charge_mean[i] = 0.0
-        for i in range(self.N_particles + self.N_electrodes):
-            self.potential_mean[i] = 0.0
-        for i in range(self.N_rates):
-            self.network_currents[i] = 0.0
+        # Safe in-place zeroing
+        self.charge_mean.fill(0.0)
+        self.potential_mean.fill(0.0)
+        self.network_currents.fill(0.0)
             
         self.total_jumps = 0
         target_value = 0.0  
@@ -780,13 +777,28 @@ class MonteCarlo:
 
         inner_time = self.time
 
+        # --- OPTIMIERUNG: Pre-Compute der Target-Indizes ---
+        in_indices = np.where(self.adv_index_cols == target_electrode)[0]
+        out_indices = np.where(self.adv_index_rows == target_electrode)[0]
+
         # --- Main simulation loop ---
         while self.time < time_target:
             last_time = self.time
 
-            # 1. Update memristive resistances & calculate rates
+            # 1. Update memristive resistances & calculate rates (PRE-JUMP)
             self.update_exponential_resistance(I0, R_max, R_min)
             self.calc_tunnel_rates()
+
+            # --- PRE-JUMP OBSERVABLES CACHING ---
+            current_rate_sum = 0.0
+            for i in in_indices:
+                current_rate_sum += self.tunnel_rates[i]
+            for i in out_indices:
+                current_rate_sum -= self.tunnel_rates[i]
+
+            current_charge = self.charge_vector.copy()
+            current_potential = self.potential_vector.copy()
+            current_network_rates = self.tunnel_rates.copy()
 
             # 2. Random numbers & KMC step
             random_number1 = np.random.rand()
@@ -821,32 +833,23 @@ class MonteCarlo:
 
             self.update_floating_electrode(idx_np_target)
 
-            # --- 4. Memristives Memory (I_tilde) update ---
+            # --- 4. Memristive Memory (I_tilde) update ---
+            # Der Decay passiert immer, da die Zeit dt vergangen ist.
             decay = np.exp(-dt / tau_0)
-            for i in range(self.N_rates):
-                self.I_tilde[i] *= decay
+            self.I_tilde *= decay
             
-            # A "+1" for a junction, if an event actually was in the time frame!
+            # WICHTIG: Das "+1" darf nur addiert werden, wenn der Sprung auch in die Zeitscheibe gepasst hat!
             if valid_jump:
                 self.I_tilde[self.jump] += 1.0
                 rev_jump = self.reverse_jump_indices[self.jump]
                 self.I_tilde[rev_jump] += 1.0
 
-            # --- 5. Accumalte olbservable ---
-            for i in range(self.N_particles):
-                self.charge_mean[i] += self.charge_vector[i] * dt
-                
-            for i in range(self.N_particles + self.N_electrodes):
-                self.potential_mean[i] += self.potential_vector[i] * dt
-                
-            for i in range(self.N_rates):
-                rate_dt = self.tunnel_rates[i] * dt
-                self.network_currents[i] += rate_dt
-                
-                if self.adv_index_cols[i] == target_electrode:
-                    target_value += rate_dt
-                elif self.adv_index_rows[i] == target_electrode:
-                    target_value -= rate_dt
+            # --- 5. Accumulate observables (PRE-JUMP VALUES) ---
+            target_value += current_rate_sum * dt
+            
+            self.charge_mean += current_charge * dt
+            self.potential_mean += current_potential * dt
+            self.network_currents += current_network_rates * dt
                         
             if is_done:
                 break
@@ -855,17 +858,10 @@ class MonteCarlo:
         total_sim_time = time_target - inner_time
         
         if total_sim_time > 0:
-
             self.target_observable_mean = self.ele_charge * target_value / total_sim_time
-                
-            for i in range(self.N_particles):
-                self.charge_mean[i] /= total_sim_time
-                
-            for i in range(self.N_particles + self.N_electrodes):
-                self.potential_mean[i] /= total_sim_time
-                
-            for i in range(self.N_rates):
-                self.network_currents[i] = self.ele_charge * self.network_currents[i] / total_sim_time
+            self.charge_mean /= total_sim_time
+            self.potential_mean /= total_sim_time
+            self.network_currents = self.ele_charge * self.network_currents / total_sim_time
         else:
             self.target_observable_mean = 0.0
 

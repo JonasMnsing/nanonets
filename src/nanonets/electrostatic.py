@@ -45,9 +45,10 @@ class NanoparticleElectrostatic:
     -----
     All capacitances are in attofarads (aF) and charges are in (aC).
     """
-    EPSILON_0           = 8.85418781762039e-3  # aF/nm, vacuum permittivity
+    EPSILON_0           = 8.85418781762039e-3   # aF/nm, vacuum permittivity
     PI                  = 3.14159265359
-    ELECTRODE_RADIUS    = 10.0  # nm
+    ELECTRODE_RADIUS    = 10.0                  # nm
+    ELE_CHARGE_A_C      = 0.160217662           # [aC] (attoCoulombs, 1e-18 C)
     
     def __init__(self, topology: NanoparticleTopology, electrode_type: Optional[List[str]] = None) -> None:
         """
@@ -600,3 +601,7 @@ class NanoparticleElectrostatic:
         if getattr(self, 'inv_capacitance_matrix', None) is None:
             raise RuntimeError("Inverse capacitance matrix not calculated. Call calc_capacitance_matrix first.")
         return self.inv_capacitance_matrix.copy()
+
+    def get_charging_energies(self):
+
+        return 1000*((self.ELE_CHARGE_A_C**2) * self.inv_capacitance_matrix.diagonal() / 2)/self.ELE_CHARGE_A_C

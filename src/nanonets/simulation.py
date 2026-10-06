@@ -462,7 +462,7 @@ class Simulation:
 
         # --- Main simulation loop: ensemble average ---
         for s in range(n_trajectories):
-            self.model.charge_vector = self.q_eq[s,:].copy()
+            self.model.charge_vector = self.q_eq[s,:] #.copy()
 
             if self.dynamic_resistances:
                 self.model.I_tilde.fill(0.0)
@@ -504,7 +504,7 @@ class Simulation:
                 self.model.charge_vector -= offset
 
             # Store last charge vector for each run
-            self.q_eq[s, :] = self.model.charge_vector.copy()
+            self.q_eq[s, :] = self.model.charge_vector #.copy()
 
         # --- Statistics and final result arrays ---
         self.observable_storage = np.mean(observable, axis=0)
