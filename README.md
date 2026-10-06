@@ -16,7 +16,11 @@ python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # 3. Install the package
+# Option A: Core simulator only (lightweight, recommended for HPC)
 pip install -e .
+
+# Option B: Full installation (includes Jupyter, Matplotlib, SciPy, and more for tutorials and advanced utilities)
+pip install -e .[all]
 ```
 
 ## 🐳 Usage with Docker (Cross-Platform)

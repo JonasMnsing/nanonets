@@ -123,7 +123,6 @@ class Simulation:
             res_info = {"mean_R": 25.0, "std_R": 0.0, "dynamic": False}
 
         self.dynamic_resistances = res_info.get('dynamic', False)
-        self.dynamic_resistances_info = res_info
 
         # --- 2. TOPOLOGY COMPOSITION ---
         # Init Topology
@@ -246,7 +245,8 @@ class Simulation:
             if self.dynamic_resistances:
                 self.resistance_storage = np.zeros((n_voltages, n_junctions))
 
-        j = 0
+        reverse_jump_indices = np.ascontiguousarray(self.tunneling.get_reverse_jump_indices(), dtype=np.int64)
+
         for i, voltage_values in enumerate(voltages):
             
             # --- Get all CONSTANT KMC model input arrays ---
@@ -286,7 +286,7 @@ class Simulation:
                 # Instantiate (Numba-optimized) model
                 self.model = MonteCarlo(
                     charge_vector, potential_vector, inv_capacitance_matrix, const_capacitance_values,
-                    temperatures, resistances, adv_index_rows, adv_index_cols, N_electrodes, N_particles,
+                    temperatures, resistances, adv_index_rows, adv_index_cols, reverse_jump_indices, N_electrodes, N_particles,
                     floating_electrodes
                 )
                 
@@ -399,9 +399,6 @@ class Simulation:
             R_max = dyn_res_kwargs.get('R_max', 25.0)
             R_min = dyn_res_kwargs.get('R_min', 10.0)
 
-        # Round voltages to 0.01 mV
-        voltages = np.round(voltages, 5)
-        
         # --- Get strictly contiguous arrays for Numba ---
         inv_capacitance_matrix = np.ascontiguousarray(self.electrostatic.get_inv_capacitance_matrix(), dtype=np.float64)
         const_capacitance_values = np.ascontiguousarray(self.tunneling.get_const_capacitance_values(), dtype=np.float64)
@@ -410,6 +407,7 @@ class Simulation:
 
         adv_index_rows = np.ascontiguousarray(adv_index_rows, dtype=np.int64)
         adv_index_cols = np.ascontiguousarray(adv_index_cols, dtype=np.int64)
+        reverse_jump_indices = np.ascontiguousarray(self.tunneling.get_reverse_jump_indices(), dtype=np.int64)
         floating_electrodes = np.ascontiguousarray(np.where(self.electrostatic.electrode_type == 'floating')[0], dtype=np.int64)
         const_electrodes = np.ascontiguousarray(np.where(self.electrostatic.electrode_type == 'constant')[0], dtype=np.int64)
 
@@ -426,9 +424,11 @@ class Simulation:
         # --- Instantiate (Numba-optimized) model ---
         self.model = MonteCarlo(
             initial_charge_vector.copy(), potential_vector, inv_capacitance_matrix, const_capacitance_values,
-            temperatures, resistances, adv_index_rows, adv_index_cols, N_electrodes, N_particles, 
+            temperatures, resistances, adv_index_rows, adv_index_cols, reverse_jump_indices, N_electrodes, N_particles, 
             floating_electrodes
         )
+
+        _ = self.model.run_equilibration_steps(0)
 
         # Initial time for the reference state
         self.model.time = time_steps[0]
@@ -462,10 +462,10 @@ class Simulation:
 
         # --- Main simulation loop: ensemble average ---
         for s in range(n_trajectories):
-            self.model.charge_vector = self.q_eq[s,:].copy()
+            self.model.charge_vector = self.q_eq[s,:] #.copy()
 
             if self.dynamic_resistances:
-                self.model.I_tilde = np.zeros(len(adv_index_rows))
+                self.model.I_tilde.fill(0.0)
                                
             for i, voltage_values in enumerate(voltages):
                 # Apply charging state from electrode voltage
@@ -504,11 +504,17 @@ class Simulation:
                 self.model.charge_vector -= offset
 
             # Store last charge vector for each run
-            self.q_eq[s, :] = self.model.charge_vector.copy()
+            self.q_eq[s, :] = self.model.charge_vector #.copy()
 
         # --- Statistics and final result arrays ---
         self.observable_storage = np.mean(observable, axis=0)
         self.observable_error_storage = 1.96 * np.std(observable, axis=0, ddof=1) / np.sqrt(n_trajectories)
+
+        # Displacement Currents
+        C_out_vec = self.electrostatic.get_electrode_capacitance_matrix()[target_electrode, :]
+        dt = time_steps[1] - time_steps[0]
+        d_phi_dt = np.gradient(self.potential_storage[:, N_electrodes:], dt, axis=0)
+        self.displacement_storage = d_phi_dt @ C_out_vec
 
         # Prepare output voltage arrays for saving
         if save:
@@ -543,6 +549,15 @@ class Simulation:
             Array of standard errors (or 95% CI) for each observable.
         """
         return self.observable_error_storage.copy()
+
+    def get_observable_displacement_storage(self) -> np.ndarray:
+        """
+        Returns
+        -------
+        np.ndarray
+            Array of main observable displacement currents for each time point.
+        """
+        return self.displacement_storage.copy()
     
     def get_state_storage(self) -> np.ndarray:
         """
@@ -597,7 +612,7 @@ class Simulation:
         adv_index_rows, adv_index_cols = self.tunneling.get_advanced_indices()
         
         return {
-            (adv_index_rows[i], adv_index_cols[i]) : np.array(self.resistance_storage)[:, i].copy()
+            (adv_index_rows[i], adv_index_cols[i]) : np.array(self.resistance_storage)[:, i].copy() / ((self.tunneling.ELE_CHARGE_A_C ** 2) * 1e-12)
             for i in range(len(self.resistance_storage[0]))
         }
     
