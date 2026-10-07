@@ -11,8 +11,8 @@ N_PERIODS       = 100
 SAMPLE_P_PERIOD = 40
 
 # Fix Parameter
-FREQ_MHZ        = 120.0
-TARGET_CURRENT  = 50.0  # pA threshold for the memristor switching
+FREQ_MHZ        = 150.0
+TARGET_CURRENT  = 40.0  # pA threshold for the memristor switching
 R_MAX           = 25.0  # MΩ
 R_MIN           = 5.0   # MΩ
 
