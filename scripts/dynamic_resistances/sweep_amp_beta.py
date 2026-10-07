@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 
 from nanonets.utils import sinusoidal_voltages, get_time_setup_from_frequency
-from nanonets.utils.parallel import batch_launch, run_dynamic_simulation
+from nanonets.utils.parallel import batch_launch, run_dynamic_simulation, setup_compute_env
 
 # ─── Configuration ────────────────────────────────────────────────────────────────
 N_NP            = 9
@@ -10,19 +10,21 @@ N_TRAJECTORIES  = 500
 N_PERIODS       = 100
 SAMPLE_P_PERIOD = 40
 
-# Fixe System-Parameter
-FREQ_MHZ        = 60.0
+# Fix Parameter
+FREQ_MHZ        = 120.0
 TARGET_CURRENT  = 50.0  # pA threshold for the memristor switching
 R_MAX           = 25.0  # MΩ
 R_MIN           = 5.0   # MΩ
 
-# Der 2D Parameter-Sweep
+# 2D Parameter-Sweep
 AMPLITUDE_LIST  = [0.07, 0.14, 0.21, 0.28, 0.35]
 BETA_LIST       = [0.05, 0.1, 0.5, 1.0, 3.0, 10.0, 50.0]
 
-OUTPUT_DIR      = Path("/scratch/j_mens07/data/2_funding_period/memristors/amp_beta/")
-LOG_LEVEL       = logging.INFO
-CPU_CNT         = 10
+# PATH and CPU count
+OUTPUT_DIR, CPU_CNT = setup_compute_env(
+    cluster_base_path="/scratch/j_mens07/nanonets/data/",
+    script_path=__file__)
+LOG_LEVEL = logging.INFO
 # ────────────────────────────────────────────────────────────────────────────────
 
 def calculate_I0(target_current_pA: float, tau_0: float) -> float:
@@ -83,7 +85,7 @@ def main():
                 'sim_kwargs': {
                     'n_trajectories': N_TRAJECTORIES, 
                     'save': True,
-                    'verbose': True
+                    'verbose': True,
                     **dyn_res
                 }
             }

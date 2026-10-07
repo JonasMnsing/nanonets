@@ -399,6 +399,8 @@ class Simulation:
             R_max = dyn_res_kwargs.get('R_max', 25.0)
             R_min = dyn_res_kwargs.get('R_min', 10.0)
 
+        self.time_storage = time_steps
+
         # --- Get strictly contiguous arrays for Numba ---
         inv_capacitance_matrix = np.ascontiguousarray(self.electrostatic.get_inv_capacitance_matrix(), dtype=np.float64)
         const_capacitance_values = np.ascontiguousarray(self.tunneling.get_const_capacitance_values(), dtype=np.float64)
@@ -526,11 +528,13 @@ class Simulation:
             V_safe_vals[:, const_electrodes] = voltages[:, const_electrodes]
             V_safe_vals[:, -1] = voltages[:, -1]
 
-            self.data_to_path(V_safe_vals, self.path1)
+            self.dynamic_data_to_path(V_safe_vals, self.path1)
             self.potential_to_path(self.path2)
             
             if verbose:
                 self.network_current_to_path(self.path3)
+                if self.dynamic_resistances:
+                    self.resistance_to_path(self.path4)
 
     def get_observable_storage(self) -> np.ndarray:
         """
@@ -663,7 +667,10 @@ class Simulation:
         end_idx = voltages.shape[0]
 
         # Only get calculated slices
-        val_a = self.get_eq_jump_storage()[:end_idx].reshape(-1, 1)
+        try:
+            val_a = self.get_eq_jump_storage()[:end_idx].reshape(-1, 1)
+        except:
+            val_a = np.zeros((end_idx, 1))
         val_b = self.get_jump_storage()[:end_idx].reshape(-1, 1)
         val_c = self.get_observable_storage()[:end_idx].reshape(-1, 1)
         val_d = self.get_observable_error_storage()[:end_idx].reshape(-1, 1)
@@ -672,6 +679,46 @@ class Simulation:
         # Use all electrode columns
         columns = [f'E{i}' for i in range(voltages.shape[1] - 1)]
         columns = np.array(columns + ['G', 'Eq_Jumps', 'Jumps', 'Observable', 'Error'])
+
+        df = pd.DataFrame(data)
+        df.columns = columns
+
+        # Overwrite file
+        df.to_csv(path, index=False)
+
+    def dynamic_data_to_path(self, voltages : np.ndarray, path : str) -> None:
+        """
+        Save simulation results for each voltage set to a CSV file.
+
+        Parameters
+        ----------
+        voltages : np.ndarray
+            Array of applied electrode voltages (shape: [n_points, n_electrodes]).
+        path : str
+            File path for output CSV.
+
+        Notes
+        -----
+        The output file will have columns for all electrodes, followed by:
+        Eq_Jumps (equilibration steps), Jumps (total KMC steps), Observable (main value), and Error (statistical error).
+        Appends to file if already exists, otherwise creates a new file with headers.
+        """
+        end_idx = voltages.shape[0]
+
+        val_t = self.get_time_storage()[:end_idx].reshape(-1, 1)
+        try:
+            val_a = self.get_eq_jump_storage()[:end_idx].reshape(-1, 1)
+        except:
+            val_a = np.zeros((end_idx, 1))
+        val_b = self.get_jump_storage()[:end_idx].reshape(-1, 1)
+        val_c = self.get_observable_storage()[:end_idx].reshape(-1, 1)
+        val_d = self.get_observable_error_storage()[:end_idx].reshape(-1, 1)
+        val_e = self.get_observable_displacement_storage()[:end_idx].reshape(-1, 1)
+        data = np.hstack([val_t, voltages, val_a, val_b, val_c, val_d, val_e])
+
+        # Use all electrode columns
+        columns = [f'E{i}' for i in range(voltages.shape[1] - 1)]
+        columns = np.array(['t'] + columns + ['G', 'Eq_Jumps', 'Jumps', 'Observable', 'Error', 'Displacement'])
 
         df = pd.DataFrame(data)
         df.columns = columns
@@ -739,6 +786,6 @@ class Simulation:
         avg_r_cols = [f"{adv_index_rows[i]}_{adv_index_cols[i]}" for i in range(len(adv_index_rows))]
         
         data_to_save = self.resistance_storage[:end_idx] if end_idx is not None else self.resistance_storage
-        resistance_df = pd.DataFrame(data_to_save, columns=avg_r_cols)
+        resistance_df = pd.DataFrame(data_to_save / ((self.tunneling.ELE_CHARGE_A_C ** 2) * 1e-12), columns=avg_r_cols)
 
         resistance_df.to_parquet(path, engine='pyarrow', index=False)
