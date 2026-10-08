@@ -288,3 +288,71 @@ def generate_band_limited_noise(duration_s: float, max_amplitude: float = 20e-3,
     final_noise = np.clip(scaled_noise, -max_amplitude, max_amplitude)
     
     return time_series, final_noise
+
+def rectangular_pulses(V_write: Union[float, List[float], np.ndarray], t_write: Union[float, List[float], np.ndarray],
+                       t_wait: Union[float, List[float], np.ndarray], dt: float, n_pulses: int = 2) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Generates a generic sequence of rectangular voltage pulses.
+    Supports both homogeneous (constant) and heterogeneous (variable) pulse trains.
+
+    Parameters
+    ----------
+    V_write : float or array-like
+        Voltage amplitude(s) of the pulse(s).
+    t_write : float or array-like
+        Duration(s) of the pulse(s) in seconds.
+    t_wait : float or array-like
+        Duration(s) of the wait time BETWEEN pulses. 
+        If array-like, length must be len(V_write) - 1.
+    dt : float
+        Time resolution (time step) of the simulation.
+    n_pulses : int, default 2
+        Number of pulses. Only used if V_write is a single float.
+
+    Returns
+    -------
+    t_series : np.ndarray
+        1D array of time steps (length n_total + 1).
+    voltages : np.ndarray
+        2D array of shape (n_total, N_electrodes) with applied voltages.
+    """
+
+    # 1. Normalize inputs to numpy arrays
+    if np.isscalar(V_write):
+        V_arr = np.full(n_pulses, float(V_write))
+        t_w_arr = np.full(n_pulses, float(t_write))
+        # Wait array is always one less than the number of pulses
+        t_wait_arr = np.full(max(0, n_pulses - 1), float(t_wait)) 
+    else:
+        V_arr = np.asarray(V_write, dtype=float)
+        t_w_arr = np.asarray(t_write, dtype=float)
+        t_wait_arr = np.asarray(t_wait, dtype=float)
+        n_pulses = len(V_arr)
+        
+        if len(t_wait_arr) != max(0, n_pulses - 1):
+            raise ValueError("Length of t_wait must be len(V_write) - 1")
+
+    # 2. Convert times to integer number of steps
+    n_write_steps = np.round(t_w_arr / dt).astype(int)
+    n_wait_steps = np.round(t_wait_arr / dt).astype(int)
+
+    # 3. Calculate total simulation length
+    n_total = np.sum(n_write_steps) + np.sum(n_wait_steps)
+
+    # 4. Initialize Arrays
+    t_series = np.arange(0, n_total + 1) * dt
+    V_signal = np.zeros(n_total)
+
+    # 5. Populate Voltage Vector
+    current_idx = 0
+    for i in range(n_pulses):
+        # Apply Pulse
+        pulse_length = n_write_steps[i]
+        V_signal[current_idx : current_idx + pulse_length] = V_arr[i]
+        current_idx += pulse_length
+        
+        # Apply Wait (except after the very last pulse)
+        if i < n_pulses - 1:
+            current_idx += n_wait_steps[i]
+
+    return t_series, V_signal
