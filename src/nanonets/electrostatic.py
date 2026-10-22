@@ -187,7 +187,7 @@ class NanoparticleElectrostatic:
 
         self.self_capacitance = np.repeat(self_cap, self.topo.N_particles)
 
-    def calc_capacitance_matrix(self, eps_r: float = 2.6, eps_s: float = 3.9, short_range: bool = True)->None:
+    def calc_capacitance_matrix(self, eps_r: float = 2.6, short_range: bool = True)->None:
         """
         Calculate the capacitance matrix (NxN) for the nanoparticle network.
 
@@ -212,8 +212,8 @@ class NanoparticleElectrostatic:
         RuntimeError
             If radii have not been initialized, or if matrix inversion fails.
         """
-        if eps_r <= 0 or eps_s <= 0:
-            raise ValueError(f"Permittivities must be positive, got eps_r={eps_r}, eps_s={eps_s}")
+        if eps_r <= 0:
+            raise ValueError(f"Permittivities must be positive, got eps_r={eps_r}")
         
         if self.topo.radius_vals is None:
             raise RuntimeError("Nanoparticle radii not initialized. Initialize a network first.")
@@ -230,7 +230,6 @@ class NanoparticleElectrostatic:
         N = self.topo.N_particles
         self.capacitance_matrix = np.zeros((N, N))
         self.eps_r = eps_r
-        self.eps_s = eps_s
 
         # Loop over nanoparticles to fill capacitance matrix
         for i in range(N):

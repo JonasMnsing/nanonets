@@ -5,6 +5,7 @@ from .monte_carlo import MonteCarlo
 
 import numpy as np
 import pandas as pd
+import networkx as nx
 import os.path
 
 class Simulation:
@@ -114,7 +115,7 @@ class Simulation:
         """
 
         # --- 1. Parameter Defaults Setup ---
-        electrode_type = kwargs.get('electrode_type', topology_parameter.get('electrode_type', 'constant'))
+        electrode_type = kwargs.get('electrode_type', topology_parameter.get('electrode_type', None))
 
         if np_info is None:
             np_info = {"eps_r": 2.6, "eps_s": 3.9, "mean_radius": 10.0, "std_radius": 0.0}
@@ -164,7 +165,20 @@ class Simulation:
             path_var = f'Np={topology_parameter["Np"]}_Ne={len(topology_parameter["e_pos"])}{add_to_path}'
             
         elif self.network_topology_type == "set":
-            pass
+            self.topology.radius_vals = np.array([np_info['mean_radius']])
+            self.topology.N_particles = 1
+            self.topology.N_electrodes = 2
+            self.topology.N_junctions = 2
+            spacing = 2 * self.topology.radius_vals[0] + self.topology.MIN_NP_NP_DISTANCE
+            self.topology.pos = {
+                -1 : (-spacing,0),
+                -2 : (spacing,0),
+                0  : (0,0)
+            }
+            self.topology.G = nx.DiGraph()
+            self.topology.G.add_nodes_from([0,-1,-2])
+            self.topology.G.add_edges_from([[-1,0],[0,-1],[0,-2],[-2,0]])
+            path_var = f'set{add_to_path}'
             
         else:
             pass
@@ -180,8 +194,16 @@ class Simulation:
         
         if self.network_topology_type != "set":
             self.electrostatic.constant_self_capacitance(self_cap=self_cap)
-            self.electrostatic.calc_capacitance_matrix(np_info['eps_r'], np_info['eps_s'])
+            self.electrostatic.calc_capacitance_matrix(np_info['eps_r'])
             self.electrostatic.calc_electrode_capacitance_matrix()
+        else:
+            self.electrostatic.self_capacitance = np.array([self_cap])
+            cap_m = self.electrostatic.mutual_capacitance_adjacent_spheres(
+                    np_info['eps_r'], self.topology.radius_vals[0], self.electrostatic.ELECTRODE_RADIUS, spacing)
+            self.electrostatic.capacitance_matrix = np.array([[self_cap + 2*cap_m]])
+            self.electrostatic.inv_capacitance_matrix = np.linalg.inv(self.electrostatic.get_capacitance_matrix())
+            self.electrostatic.electrode_capacitance_matrix = np.array([[cap_m],
+                                                                        [cap_m]])
 
         # --- 4. TUNNELING COMPOSITION ---
         # Init Tunneling
@@ -193,6 +215,11 @@ class Simulation:
             if res_info2 is not None:
                 self.tunneling.update_junction_resistances_at_random(res_info2['N'], res_info2['mean_R'], res_info2['std_R'])
             self.tunneling.init_const_capacitance_values()
+        else:
+            self.tunneling.adv_index_rows = np.array([0, 1, 2, 2])
+            self.tunneling.adv_index_cols = np.array([2, 2, 0, 1])
+            self.tunneling.init_junction_resistances(res_info['mean_R'], res_info['std_R'])
+            self.tunneling.const_capacitance_values = np.full(4, (self.electrostatic.inv_capacitance_matrix[0,0]*self.electrostatic.ELE_CHARGE_A_C**2) / 2)
 
         # --- 5. PATHS ---
         self.folder = folder
