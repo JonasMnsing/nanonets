@@ -4,14 +4,14 @@ from nanonets.utils import sinusoidal_voltages, get_time_setup_from_frequency
 from nanonets.utils.parallel import batch_launch, run_dynamic_simulation, setup_compute_env
 
 # ─── Configuration ────────────────────────────────────────────────────────────────
-N_TRAJECTORIES  = 100
-N_PERIODS       = 100
-SAMPLE_P_PERIOD = 40
+N_TRAJECTORIES  = 2000
+N_PERIODS       = 50
+SAMPLE_P_PERIOD = 300
 SELF_CAP        = 0.0
 
 # Fix Parameter
-FREQ_MHZ    = 500.0
-AMP_MULT    = 3
+FREQ_MHZ    = 117.0
+AMP_MULT    = 2.2
 TOPO        = {"Nx": 1, "Ny": 1, "electrode_type" : ['constant','constant']}
 sim         = nanonets.Simulation(TOPO, SELF_CAP)
 AMPLITUDE   = AMP_MULT * sim.electrostatic.get_charging_energies()[0]*1e-3
@@ -19,8 +19,9 @@ R_MAX       = 25.0
 R_MIN       = 5.0 
 
 # 2D Parameter-Sweep
-TAU_LIST            = [0.1e-9, 0.2e-9, 1.0e-9, 2.0e-9, 6.0e-9, 20.0e-9, 100.0e-9]
-TARGET_CURRENT_LIST = [1.0, 5.0, 10.0, 20.0, 40.0, 80.0, 150.0, 300.0, 600.0, 1200.0]
+TAU_LIST            = [0.1e-9, 0.2e-9, 0.5e-9, 1.0e-9, 2.0e-9, 4.0e-9, 8.0e-9, 16.0e-9, 32.0e-9, 64.0e-9]
+# TARGET_CURRENT_LIST = [1.0, 5.0, 10.0, 20.0, 40.0, 80.0, 150.0, 300.0, 600.0, 1200.0]
+TARGET_CURRENT_LIST = [20.0]
 
 # PATH and CPU count
 OUTPUT_DIR, CPU_CNT = setup_compute_env(
@@ -45,7 +46,7 @@ def main():
 
     # Number of samples and time step
     N_steps, dt = get_time_setup_from_frequency(f0_hz=f0_hz, n_periods=N_PERIODS, samples_per_period=SAMPLE_P_PERIOD)
-    time_steps, volt = sinusoidal_voltages(N_samples=N_steps, topology_parameter=TOPO,amplitudes=[AMPLITUDE, 0.0], frequencies=[f0_hz, 0.0], time_step=dt)
+    time_steps, volt = sinusoidal_voltages(N_samples=N_steps, topology_parameter=TOPO, amplitudes=[AMPLITUDE, 0.0], frequencies=[f0_hz, 0.0], time_step=dt)
 
     for i_target in TARGET_CURRENT_LIST:
         for tau_0 in TAU_LIST:

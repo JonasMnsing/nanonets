@@ -11,7 +11,7 @@ SAMPLE_P_PERIOD = 40
 SELF_CAP        = 0.0
 
 # 2D Parameter-Sweep
-AMPLITUDE_MULT  = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5]
+AMPLITUDE_MULT  = [2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 3.2, 3.4, 3.6, 3.8, 4.0]
 FREQ_LIST       = np.round(np.logspace(0,4,30),2)
 
 # PATH and CPU count

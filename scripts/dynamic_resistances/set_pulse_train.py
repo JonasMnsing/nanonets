@@ -1,4 +1,5 @@
 import logging
+import nanonets
 import numpy as np
 
 # ACHTUNG: Importiere hier deine neue Puls-Funktion!
@@ -6,20 +7,20 @@ from nanonets.utils import rectangular_pulses
 from nanonets.utils.parallel import batch_launch, run_dynamic_simulation, setup_compute_env
 
 # ─── Configuration ────────────────────────────────────────────────────────────────
-N_NP            = 9
-N_TRAJECTORIES  = 500
-
-# Fix Parameter
-V_WRITE         = 0.35   # V 
-TAU_0           = 20e-9  # s
-TARGET_CURRENT  = 40.0   # pA 
+N_TRAJECTORIES  = 1000
+TAU_0           = 2e-9  # s
+TARGET_CURRENT  = 20.0   # pA 
 R_MAX           = 25.0   # MΩ
 R_MIN           = 5.0    # MΩ
 DT              = 1.5e-11
 
-# 2D Parameter-Sweep (Pulse Duration vs. Pulse Interval)
-T_WRITE_LIST    = [0.1,0.2,0.4,0.8,1.6,3.2,6.4,12.8,25.6,51.2]
-T_WAIT_LIST     = [0.0,0.1,0.2,0.4,0.8,1.6,3.2,6.4,12.8,25.6,51.2,102.4]
+# Single Electron Transistor
+TOPO        = {"Nx": 1, "Ny": 1, "electrode_type" : ['constant','constant']}
+sim         = nanonets.Simulation(TOPO, 0.0)
+AMP_MULT    = 2.2
+V_WRITE     = [AMP_MULT * sim.electrostatic.get_charging_energies()[0]*1e-3] * 10
+T_WRITE     = [1.6e-9] * 10
+T_WAIT      = [1.0e-9] * 7 + [12.0e-9] + [1.0e-9]
 
 # Path Setup
 OUTPUT_DIR, CPU_CNT = setup_compute_env(
@@ -40,13 +41,6 @@ def main():
     
     tasks = []
 
-    # Network
-    topo = {
-        "Nx": N_NP, "Ny": N_NP,
-        "e_pos": [[0, 0], [N_NP-1, N_NP-1]],
-        "electrode_type": ['constant', 'constant']
-    }
-
     # Memristor
     res_info = {"mean_R": R_MAX, "std_R": 0.0, "dynamic": True}
     dyn_res = {
@@ -55,37 +49,34 @@ def main():
         'R_max': R_MAX,
         'R_min': R_MIN
     }
-
-    for t_w in T_WRITE_LIST:
-        for t_wait in T_WAIT_LIST:
             
-            # 1. Two Pulses
-            time_steps, V_signal = rectangular_pulses(
-                V_write=V_WRITE, 
-                t_write=t_w*1e-9, 
-                t_wait=t_wait*1e-9, 
-                dt=DT, 
-                n_pulses=2
-            )
-            volt = np.zeros(shape=(len(V_signal), 3))
-            volt[:,0] = V_signal
-            
-            # 2. Tasks
-            args = (time_steps, volt, topo, OUTPUT_DIR)
-            kwargs = {
-                'net_kwargs': {
-                    'add_to_path': f"_tw{t_w:.1f}ns_twait{t_wait:.1f}ns",
-                    'res_info': res_info,
-                    'self_cap': 0.0
-                },
-                'sim_kwargs': {
-                    'n_trajectories': N_TRAJECTORIES, 
-                    'save': True,
-                    'verbose': True,
-                    **dyn_res
-                }
-            }
-            tasks.append((args, kwargs))
+    # 1. Two Pulses
+    time_steps, V_signal = rectangular_pulses(
+        V_write=V_WRITE, 
+        t_write=T_WRITE, 
+        t_wait=T_WAIT, 
+        dt=DT, 
+        n_pulses=2
+    )
+    volt = np.zeros(shape=(len(V_signal), 3))
+    volt[:,0] = V_signal
+    
+    # 2. Tasks
+    args = (time_steps, volt, TOPO, OUTPUT_DIR)
+    kwargs = {
+        'net_kwargs': {
+            'add_to_path': f"_pulse_train",
+            'res_info': res_info,
+            'self_cap': 0.0
+        },
+        'sim_kwargs': {
+            'n_trajectories': N_TRAJECTORIES, 
+            'save': True,
+            'verbose': True,
+            **dyn_res
+        }
+    }
+    tasks.append((args, kwargs))
 
     logging.info(f"Queued {len(tasks)} simulation tasks. Starting batch launch on {CPU_CNT} cores.")
     batch_launch(run_dynamic_simulation, tasks, CPU_CNT)

@@ -222,3 +222,6 @@ data/**
 
 !data/**/
 !data/**/.gitkeep
+
+# Plots
+*.svg

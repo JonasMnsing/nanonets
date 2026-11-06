@@ -1,27 +1,34 @@
 import logging
-from nanonets.utils import sinusoidal_voltages, get_time_setup_from_frequency
+import nanonets
+import numpy as np
+
+# ACHTUNG: Importiere hier deine neue Puls-Funktion!
+from nanonets.utils import rectangular_pulses  
 from nanonets.utils.parallel import batch_launch, run_dynamic_simulation, setup_compute_env
 
 # ─── Configuration ────────────────────────────────────────────────────────────────
-N_NP            = 9
-N_TRAJECTORIES  = 500
-N_PERIODS       = 100
-SAMPLE_P_PERIOD = 40
+N_TRAJECTORIES  = 1000
+TAU_0           = 2e-9  # s
+TARGET_CURRENT  = 20.0   # pA 
+R_MAX           = 25.0   # MΩ
+R_MIN           = 5.0    # MΩ
+DT              = 1.5e-11
 
-# Fix Parameter
-FREQ_MHZ        = 150.0
-TARGET_CURRENT  = 40.0  # pA threshold for the memristor switching
-R_MAX           = 25.0  # MΩ
-R_MIN           = 5.0   # MΩ
+# 2D Parameter-Sweep (Pulse Duration vs. Pulse Interval)
+T_WRITE_LIST = [0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4]
+T_WAIT_LIST  = [0.1, 0.2, 0.4, 0.8, 1.2, 1.6, 2.4, 3.2, 4.8, 6.4, 12.8, 25.6]
 
-# 2D Parameter-Sweep
-AMPLITUDE_LIST  = [0.07, 0.14, 0.21, 0.28, 0.35]
-BETA_LIST       = [0.05, 0.1, 0.5, 1.0, 3.0, 10.0, 50.0]
+# Single Electron Transistor
+TOPO        = {"Nx": 1, "Ny": 1, "electrode_type" : ['constant','constant']}
+sim         = nanonets.Simulation(TOPO, 0.0)
+AMP_MULT    = 2.2
+V_WRITE     = AMP_MULT * sim.electrostatic.get_charging_energies()[0]*1e-3
 
-# PATH and CPU count
+# Path Setup
 OUTPUT_DIR, CPU_CNT = setup_compute_env(
     cluster_base_path="/scratch/j_mens07/nanonets/data/",
-    script_path=__file__)
+    script_path=__file__
+)
 LOG_LEVEL = logging.INFO
 # ────────────────────────────────────────────────────────────────────────────────
 
@@ -35,48 +42,35 @@ def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     
     tasks = []
-    f0_hz = FREQ_MHZ * 1e6
-    
-    topo = {
-        "Nx": N_NP, "Ny": N_NP,
-        "e_pos": [[0, 0], [N_NP-1, N_NP-1]],
-        "electrode_type": ['constant', 'constant']
-    }
-    
-    # Activate dynamic resistances
+
+    # Memristor
     res_info = {"mean_R": R_MAX, "std_R": 0.0, "dynamic": True}
+    dyn_res = {
+        'tau_0': TAU_0,
+        'I0': calculate_I0(TARGET_CURRENT, TAU_0),
+        'R_max': R_MAX,
+        'R_min': R_MIN
+    }
 
-    # Number of samples and time step
-    N_steps, dt = get_time_setup_from_frequency(
-        f0_hz=f0_hz, 
-        n_periods=N_PERIODS, 
-        samples_per_period=SAMPLE_P_PERIOD
-    )
-    
-    for amp in AMPLITUDE_LIST:
-        time_steps, volt = sinusoidal_voltages(
-            N_samples=N_steps, 
-            topology_parameter=topo,
-            amplitudes=[amp, 0.0], 
-            frequencies=[f0_hz, 0.0], 
-            time_step=dt
-        )
-        for beta in BETA_LIST:
+    for t_w in T_WRITE_LIST:
+        for t_wait in T_WAIT_LIST:
             
-            # Memristor parameter
-            tau_0 = beta / f0_hz
-            dyn_res = {
-                'tau_0': tau_0,
-                'I0': calculate_I0(TARGET_CURRENT, tau_0),
-                'R_max': R_MAX,
-                'R_min': R_MIN
-            }
-
-            # Define Task
-            args = (time_steps, volt, topo, OUTPUT_DIR)
+            # 1. Two Pulses
+            time_steps, V_signal = rectangular_pulses(
+                V_write=V_WRITE, 
+                t_write=t_w*1e-9, 
+                t_wait=t_wait*1e-9, 
+                dt=DT, 
+                n_pulses=2
+            )
+            volt = np.zeros(shape=(len(V_signal), 3))
+            volt[:,0] = V_signal
+            
+            # 2. Tasks
+            args = (time_steps, volt, TOPO, OUTPUT_DIR)
             kwargs = {
                 'net_kwargs': {
-                    'add_to_path': f"_amp{amp:.3f}_beta{beta:.2f}",
+                    'add_to_path': f"_tw{t_w:.1f}ns_twait{t_wait:.1f}ns_tau{TAU_0*1e9:.1f}ns",
                     'res_info': res_info,
                     'self_cap': 0.0
                 },
