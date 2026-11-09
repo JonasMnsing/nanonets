@@ -227,3 +227,45 @@ def compute_thd(amplitudes):
     power_harm = np.sum(amplitudes[1:]**2)
     
     return np.sqrt(power_harm) / np.sqrt(power_fund)
+
+def get_phase_lag(response_signal: np.ndarray, input_signal: np.ndarray) -> float:
+    """
+    Calculates the Phase Lag between a system response and the driving input 
+    at the fundamental driving frequencyme-domain snippet (maybe 3 or 4 AC cycles) of the raw Observable Tunneling Current (yt) side-by-side f
+        Range is normalized to [-180, 180]. 
+        Negative values indicate the response 'lags' behind the input (Capacitive).
+        Positive values indicate the response 'leads' the input (Inductive).
+    """
+    
+    # 1. Apply Windowing (Optional but recommended to reduce spectral leakage)
+    # If your signal is an exact integer number of periods, you can skip this.
+    # Otherwise, a Hanning window helps.
+    # window = np.hanning(len(response_signal))
+    # resp_w = response_signal * window
+    # input_w = input_signal * window
+
+    resp_w  = response_signal
+    input_w  = input_signal
+    
+    # 2. Compute FFT
+    # We use rfft because the signals are real-valued
+    fft_resp = np.fft.rfft(resp_w)
+    fft_in = np.fft.rfft(input_w)
+    
+    # 3. Find the Fundamental Frequency Index
+    # We assume the input is a dominant sine wave, so we just find the max peak.
+    # We skip index 0 (DC component).
+    idx_fund = np.argmax(np.abs(fft_in[1:])) + 1
+    
+    # 4. Extract Angles (Phases) at that index
+    angle_resp = np.angle(fft_resp[idx_fund])
+    angle_in = np.angle(fft_in[idx_fund])
+    
+    # 5. Calculate Difference
+    phase_diff = angle_resp - angle_in
+        
+    # 7. Normalize to [-180, 180] range
+    # This handles wrap-around (e.g., if result is -270, it becomes +90)
+    phase_diff = (phase_diff + np.pi) % (2 * np.pi) - np.pi
+    
+    return phase_diff / np.pi

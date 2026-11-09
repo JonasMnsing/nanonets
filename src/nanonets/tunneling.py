@@ -211,7 +211,7 @@ class NanoparticleTunneling:
         # Indices relative to nanoparticle-only part (exclude electrodes)
         row_i = self.adv_index_rows - n_elec
         col_i = self.adv_index_cols - n_elec
-        
+
         # Only use valid nanoparticle indices (exclude electrodes)
         row_mask = (row_i >= 0).astype(int)
         col_mask = (col_i >= 0).astype(int)

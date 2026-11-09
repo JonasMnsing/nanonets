@@ -1,5 +1,4 @@
 import numpy as np
-
 from scipy import signal
 from typing import Union, Tuple, List
 
@@ -185,7 +184,7 @@ def get_time_setup_from_frequency(f0_hz: float, n_periods: int, samples_per_peri
         
     dt = 1.0 / (samples_per_period * f0_hz)
     t_sim = n_periods / f0_hz
-    n_samples = int(np.round(t_sim / dt))  # np.round ist sicherer als ceil bei Float-Ungenauigkeiten
+    n_samples = int(np.round(t_sim / dt))
     
     return n_samples, dt
 
@@ -233,6 +232,62 @@ def sinusoidal_voltages(N_samples : int, topology_parameter : dict, amplitudes :
     # Voltages for each electrode
     for i in range(N_electrodes):
         voltages[:,i] = amplitudes[i]*np.sin(2*np.pi*frequencies[i]*time_steps+phase[i]) + offset[i]
+    
+    # Set floating electrodes to 0V
+    voltages[:,floating_idx] = 0.0
+    
+    return time_steps, voltages
+
+def triangular_voltages(N_samples : int, topology_parameter : dict, amplitudes : Union[float, List[float]], frequencies : Union[float, List[float]] = 0.0,
+                        phase : Union[float, List[float]]=0.0, offset : Union[float, List[float]] = 0.0, time_step : float = 1e-10)->Tuple[np.array,np.array]:
+    """Return voltage array containing triangular signals of given frequencies and amplitudes
+
+    Parameters
+    ----------
+    N_samples : int
+        Number of voltage values
+    topology_parameter : dict
+        Network topology dictonary
+    amplitudes : Union[float, List[float]]
+        Single amplitude for all constant electrodes or individual amplitude for each electrode
+    frequencies : Union[float, List[float]]
+        Single frequency for all constant electrodes or individual frequency for each electrode in Hz, if set to zero voltages are constant
+    phase: Union[float, List[float]]
+        Single phase for all constant electrodes or individual phase for each electrode
+    offset: Union[float, List[float]]
+        Single offset for all constant electrodes or individual offset for each electrode
+    time_step : float, optional
+        Time step size in seconds, by default 1e-10
+
+    Returns
+    -------
+    Tuple[np.array,np.array]
+        Time and Voltages
+    """
+    # Voltages and Time Scale
+    N_electrodes = len(topology_parameter["electrode_type"])
+    voltages = np.zeros(shape=(N_samples, N_electrodes+1))
+    time_steps = time_step*np.arange(N_samples)
+    
+    # Parameter based on electrode specification
+    electrode_types = np.array(topology_parameter["electrode_type"])
+    floating_idx = np.where(electrode_types=="floating")[0]
+
+    # Signal properties
+    frequencies = N_electrodes*[frequencies] if isinstance(frequencies, (int, float)) else frequencies
+    amplitudes = N_electrodes*[amplitudes] if isinstance(amplitudes, (int, float)) else amplitudes
+    phase = N_electrodes*[phase] if isinstance(phase, (int, float)) else phase
+    offset = N_electrodes*[offset] if isinstance(offset, (int, float)) else offset
+
+    # Voltages for each electrode
+    for i in range(N_electrodes):
+        # Generate a perfect triangle wave mirroring the sine phase and frequency using arcsin(sin(x))
+        if frequencies[i] == 0.0:
+            signal = np.zeros_like(time_steps)
+        else:
+            signal = (2 / np.pi) * np.arcsin(np.sin(2 * np.pi * frequencies[i] * time_steps + phase[i]))
+            
+        voltages[:,i] = amplitudes[i] * signal + offset[i]
     
     # Set floating electrodes to 0V
     voltages[:,floating_idx] = 0.0
@@ -288,3 +343,71 @@ def generate_band_limited_noise(duration_s: float, max_amplitude: float = 20e-3,
     final_noise = np.clip(scaled_noise, -max_amplitude, max_amplitude)
     
     return time_series, final_noise
+
+def rectangular_pulses(V_write: Union[float, List[float], np.ndarray], t_write: Union[float, List[float], np.ndarray],
+                       t_wait: Union[float, List[float], np.ndarray], dt: float, n_pulses: int = 2) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Generates a generic sequence of rectangular voltage pulses.
+    Supports both homogeneous (constant) and heterogeneous (variable) pulse trains.
+
+    Parameters
+    ----------
+    V_write : float or array-like
+        Voltage amplitude(s) of the pulse(s).
+    t_write : float or array-like
+        Duration(s) of the pulse(s) in seconds.
+    t_wait : float or array-like
+        Duration(s) of the wait time BETWEEN pulses. 
+        If array-like, length must be len(V_write) - 1.
+    dt : float
+        Time resolution (time step) of the simulation.
+    n_pulses : int, default 2
+        Number of pulses. Only used if V_write is a single float.
+
+    Returns
+    -------
+    t_series : np.ndarray
+        1D array of time steps (length n_total + 1).
+    voltages : np.ndarray
+        2D array of shape (n_total, N_electrodes) with applied voltages.
+    """
+
+    # 1. Normalize inputs to numpy arrays
+    if np.isscalar(V_write):
+        V_arr = np.full(n_pulses, float(V_write))
+        t_w_arr = np.full(n_pulses, float(t_write))
+        # Wait array is always one less than the number of pulses
+        t_wait_arr = np.full(max(0, n_pulses - 1), float(t_wait)) 
+    else:
+        V_arr = np.asarray(V_write, dtype=float)
+        t_w_arr = np.asarray(t_write, dtype=float)
+        t_wait_arr = np.asarray(t_wait, dtype=float)
+        n_pulses = len(V_arr)
+        
+        if len(t_wait_arr) != max(0, n_pulses - 1):
+            raise ValueError("Length of t_wait must be len(V_write) - 1")
+
+    # 2. Convert times to integer number of steps
+    n_write_steps = np.round(t_w_arr / dt).astype(int)
+    n_wait_steps = np.round(t_wait_arr / dt).astype(int)
+
+    # 3. Calculate total simulation length
+    n_total = np.sum(n_write_steps) + np.sum(n_wait_steps)
+
+    # 4. Initialize Arrays
+    t_series = np.arange(0, n_total + 1) * dt
+    V_signal = np.zeros(n_total)
+
+    # 5. Populate Voltage Vector
+    current_idx = 0
+    for i in range(n_pulses):
+        # Apply Pulse
+        pulse_length = n_write_steps[i]
+        V_signal[current_idx : current_idx + pulse_length] = V_arr[i]
+        current_idx += pulse_length
+        
+        # Apply Wait (except after the very last pulse)
+        if i < n_pulses - 1:
+            current_idx += n_wait_steps[i]
+
+    return t_series, V_signal

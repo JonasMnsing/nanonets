@@ -5,6 +5,7 @@ from .monte_carlo import MonteCarlo
 
 import numpy as np
 import pandas as pd
+import networkx as nx
 import os.path
 
 class Simulation:
@@ -114,7 +115,7 @@ class Simulation:
         """
 
         # --- 1. Parameter Defaults Setup ---
-        electrode_type = kwargs.get('electrode_type', topology_parameter.get('electrode_type', 'constant'))
+        electrode_type = kwargs.get('electrode_type', topology_parameter.get('electrode_type', None))
 
         if np_info is None:
             np_info = {"eps_r": 2.6, "eps_s": 3.9, "mean_radius": 10.0, "std_radius": 0.0}
@@ -164,7 +165,20 @@ class Simulation:
             path_var = f'Np={topology_parameter["Np"]}_Ne={len(topology_parameter["e_pos"])}{add_to_path}'
             
         elif self.network_topology_type == "set":
-            pass
+            self.topology.radius_vals = np.array([np_info['mean_radius']])
+            self.topology.N_particles = 1
+            self.topology.N_electrodes = 2
+            self.topology.N_junctions = 2
+            spacing = 2 * self.topology.radius_vals[0] + self.topology.MIN_NP_NP_DISTANCE
+            self.topology.pos = {
+                -1 : (-spacing,0),
+                -2 : (spacing,0),
+                0  : (0,0)
+            }
+            self.topology.G = nx.DiGraph()
+            self.topology.G.add_nodes_from([0,-1,-2])
+            self.topology.G.add_edges_from([[-1,0],[0,-1],[0,-2],[-2,0]])
+            path_var = f'set{add_to_path}'
             
         else:
             pass
@@ -180,8 +194,16 @@ class Simulation:
         
         if self.network_topology_type != "set":
             self.electrostatic.constant_self_capacitance(self_cap=self_cap)
-            self.electrostatic.calc_capacitance_matrix(np_info['eps_r'], np_info['eps_s'])
+            self.electrostatic.calc_capacitance_matrix(np_info['eps_r'])
             self.electrostatic.calc_electrode_capacitance_matrix()
+        else:
+            self.electrostatic.self_capacitance = np.array([self_cap])
+            cap_m = self.electrostatic.mutual_capacitance_adjacent_spheres(
+                    np_info['eps_r'], self.topology.radius_vals[0], self.electrostatic.ELECTRODE_RADIUS, spacing)
+            self.electrostatic.capacitance_matrix = np.array([[self_cap + 2*cap_m]])
+            self.electrostatic.inv_capacitance_matrix = np.linalg.inv(self.electrostatic.get_capacitance_matrix())
+            self.electrostatic.electrode_capacitance_matrix = np.array([[cap_m],
+                                                                        [cap_m]])
 
         # --- 4. TUNNELING COMPOSITION ---
         # Init Tunneling
@@ -193,6 +215,11 @@ class Simulation:
             if res_info2 is not None:
                 self.tunneling.update_junction_resistances_at_random(res_info2['N'], res_info2['mean_R'], res_info2['std_R'])
             self.tunneling.init_const_capacitance_values()
+        else:
+            self.tunneling.adv_index_rows = np.array([0, 1, 2, 2])
+            self.tunneling.adv_index_cols = np.array([2, 2, 0, 1])
+            self.tunneling.init_junction_resistances(res_info['mean_R'], res_info['std_R'])
+            self.tunneling.const_capacitance_values = np.full(4, (self.electrostatic.inv_capacitance_matrix[0,0]*self.electrostatic.ELE_CHARGE_A_C**2) / 2)
 
         # --- 5. PATHS ---
         self.folder = folder
@@ -399,6 +426,8 @@ class Simulation:
             R_max = dyn_res_kwargs.get('R_max', 25.0)
             R_min = dyn_res_kwargs.get('R_min', 10.0)
 
+        self.time_storage = time_steps
+
         # --- Get strictly contiguous arrays for Numba ---
         inv_capacitance_matrix = np.ascontiguousarray(self.electrostatic.get_inv_capacitance_matrix(), dtype=np.float64)
         const_capacitance_values = np.ascontiguousarray(self.tunneling.get_const_capacitance_values(), dtype=np.float64)
@@ -526,11 +555,13 @@ class Simulation:
             V_safe_vals[:, const_electrodes] = voltages[:, const_electrodes]
             V_safe_vals[:, -1] = voltages[:, -1]
 
-            self.data_to_path(V_safe_vals, self.path1)
+            self.dynamic_data_to_path(V_safe_vals, self.path1)
             self.potential_to_path(self.path2)
             
             if verbose:
                 self.network_current_to_path(self.path3)
+                if self.dynamic_resistances:
+                    self.resistance_to_path(self.path4)
 
     def get_observable_storage(self) -> np.ndarray:
         """
@@ -663,7 +694,10 @@ class Simulation:
         end_idx = voltages.shape[0]
 
         # Only get calculated slices
-        val_a = self.get_eq_jump_storage()[:end_idx].reshape(-1, 1)
+        try:
+            val_a = self.get_eq_jump_storage()[:end_idx].reshape(-1, 1)
+        except:
+            val_a = np.zeros((end_idx, 1))
         val_b = self.get_jump_storage()[:end_idx].reshape(-1, 1)
         val_c = self.get_observable_storage()[:end_idx].reshape(-1, 1)
         val_d = self.get_observable_error_storage()[:end_idx].reshape(-1, 1)
@@ -672,6 +706,46 @@ class Simulation:
         # Use all electrode columns
         columns = [f'E{i}' for i in range(voltages.shape[1] - 1)]
         columns = np.array(columns + ['G', 'Eq_Jumps', 'Jumps', 'Observable', 'Error'])
+
+        df = pd.DataFrame(data)
+        df.columns = columns
+
+        # Overwrite file
+        df.to_csv(path, index=False)
+
+    def dynamic_data_to_path(self, voltages : np.ndarray, path : str) -> None:
+        """
+        Save simulation results for each voltage set to a CSV file.
+
+        Parameters
+        ----------
+        voltages : np.ndarray
+            Array of applied electrode voltages (shape: [n_points, n_electrodes]).
+        path : str
+            File path for output CSV.
+
+        Notes
+        -----
+        The output file will have columns for all electrodes, followed by:
+        Eq_Jumps (equilibration steps), Jumps (total KMC steps), Observable (main value), and Error (statistical error).
+        Appends to file if already exists, otherwise creates a new file with headers.
+        """
+        end_idx = voltages.shape[0]
+
+        val_t = self.get_time_storage()[:end_idx].reshape(-1, 1)
+        try:
+            val_a = self.get_eq_jump_storage()[:end_idx].reshape(-1, 1)
+        except:
+            val_a = np.zeros((end_idx, 1))
+        val_b = self.get_jump_storage()[:end_idx].reshape(-1, 1)
+        val_c = self.get_observable_storage()[:end_idx].reshape(-1, 1)
+        val_d = self.get_observable_error_storage()[:end_idx].reshape(-1, 1)
+        val_e = self.get_observable_displacement_storage()[:end_idx].reshape(-1, 1)
+        data = np.hstack([val_t, voltages, val_a, val_b, val_c, val_d, val_e])
+
+        # Use all electrode columns
+        columns = [f'E{i}' for i in range(voltages.shape[1] - 1)]
+        columns = np.array(['t'] + columns + ['G', 'Eq_Jumps', 'Jumps', 'Observable', 'Error', 'Displacement'])
 
         df = pd.DataFrame(data)
         df.columns = columns
@@ -739,6 +813,6 @@ class Simulation:
         avg_r_cols = [f"{adv_index_rows[i]}_{adv_index_cols[i]}" for i in range(len(adv_index_rows))]
         
         data_to_save = self.resistance_storage[:end_idx] if end_idx is not None else self.resistance_storage
-        resistance_df = pd.DataFrame(data_to_save, columns=avg_r_cols)
+        resistance_df = pd.DataFrame(data_to_save / ((self.tunneling.ELE_CHARGE_A_C ** 2) * 1e-12), columns=avg_r_cols)
 
         resistance_df.to_parquet(path, engine='pyarrow', index=False)
