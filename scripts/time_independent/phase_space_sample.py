@@ -34,11 +34,11 @@ def main():
         args = (volt_p, TOPOLOGY, OUTPUT_DIR)
         kwargs = {
             'net_kwargs': {
-                'add_to_path': f"_self_cap{SELF_CAP:.2f}",
+                'add_to_path': f"_self_cap{SELF_CAP:.2f}_part{i}",
                 'self_cap': SELF_CAP
             },
             'sim_kwargs': {
-                'save_th': 10,
+                'save_th': 100,
             }
         }
         tasks.append((args, kwargs))
