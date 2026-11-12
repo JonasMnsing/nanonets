@@ -9,6 +9,30 @@ from typing import Dict, Any, Union, Optional, List, Tuple, Callable
 
 from nanonets import Simulation
 
+def distribute_array_across_processes(process : int, data : np.ndarray, N_processes : int) -> np.ndarray:
+    """Returns part of an array to be simulated by a certain process
+
+    Parameters
+    ----------
+    process : int
+        Process index
+    data : np.array
+        Data as array 
+    N_processes : int
+        Number of total processes
+
+    Returns
+    -------
+    np.array
+        Sub-array for given process
+    """
+
+    # Simulated rows for each process
+    index           = [i for i in range(len(data))]
+    rows            = [index[i::N_processes] for i in range(N_processes)]
+    process_rows    = rows[process]
+
+    return data[process_rows,:]
 
 def setup_compute_env(cluster_base_path: str, script_path: str, experiment_name: str = "") -> Tuple[Path, int]:
     """
