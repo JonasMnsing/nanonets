@@ -238,14 +238,14 @@ class Simulation:
         # --- Default Simulation Parameters ---
         if sim_dic is None:
             sim_dic = {
-                "n_trajectories" : 400,     # Number of independent KMC runs per voltage
-                "max_jumps"      : 20000,   # Number of productions KMC steps
-                "max_eq_jumps"   : 100000   # Number of equilibration KMC steps
+                "n_trajectories" : 100,     # Number of independent KMC runs per voltage
+                "max_jumps"      : 4000,    # Number of productions KMC steps
+                "max_eq_jumps"   : 6000     # Number of equilibration KMC steps
             }
 
-        n_trajectories = sim_dic.get('n_trajectories', 400)
-        max_jumps = sim_dic.get('max_jumps', 20000)
-        max_eq_jumps = sim_dic.get('max_eq_jumps', 100000)
+        n_trajectories = sim_dic.get('n_trajectories', 100)
+        max_jumps = sim_dic.get('max_jumps', 4000)
+        max_eq_jumps = sim_dic.get('max_eq_jumps', 6000)
 
         if self.dynamic_resistances:
             I0_val = dyn_res_kwargs.get('I0', 7.5)
