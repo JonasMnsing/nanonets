@@ -9,9 +9,10 @@ SELF_CAP    = 0.0
 N_VOLT      = 50000
 U_E         = 0.03
 GATE_VOLT   = [0.0]
+L           = 3
 TOPOLOGY    = {
-    "Nx": 3, "Ny": 3, "electrode_type" : ['constant','constant','constant','constant','constant','constant','constant','constant'],
-    "e_pos" : [[1,0],[0,0],[2,0],[0,1],[2,1],[0,2],[2,2],[1,2]]
+    "Nx": L, "Ny": L, "electrode_type" : ['constant','constant','constant','constant','constant','constant','constant','constant'],
+    "e_pos" : [[L//2,0],[0,0],[L-1,0],[0,L//2],[L-1,L//2],[0,L-1],[L-1,L-1],[L//2,L-1]]
 }
 
 # PATH and CPU count
