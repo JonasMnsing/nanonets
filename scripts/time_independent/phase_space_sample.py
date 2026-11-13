@@ -7,8 +7,7 @@ from nanonets.utils.voltages import uniform_sample
 # ─── Configuration ────────────────────────────────────────────────────────────────
 SELF_CAP    = 0.0
 N_VOLT      = 50000
-U_E         = 0.05
-VOLT        = np.linspace(-0.05,0.05,N_VOLT)
+U_E         = 0.03
 GATE_VOLT   = [0.0]
 TOPOLOGY    = {
     "Nx": 3, "Ny": 3, "electrode_type" : ['constant','constant','constant','constant','constant','constant','constant','constant'],
